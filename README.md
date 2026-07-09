@@ -86,6 +86,15 @@ be querying under old/blank values until someone manually retypes the four value
 the instance's Properties panel in POD Designer. This is one of the most likely reasons the
 batch columns come back empty even when everything else works.
 
+**⚠️ Logging note:** this tenant's effective `sap/dm/dme/pod2/Logger` level filters out
+`INFO`-level messages — `oLogger.info(...)` calls never reach the console at all here (calling
+`Logger.setDefaultLevel(Logger.Level.DEBUG)` from the browser console doesn't help either,
+since a full page reload wipes that in-memory override before the widget's `onInit()`, and its
+first fetch, even runs). All diagnostic logging in this project (`FinishedSfcList.js`,
+`OrderSfcClient.js`, `DataCollectionBatchClient.js`) therefore deliberately uses `.warn()`
+instead of `.info()`, which is confirmed visible. Keep new diagnostic logs on `.warn()` (or
+`.error()`) for the same reason — don't add `.info()` calls expecting them to show up here.
+
 **⚠️ Still unverified — check if the batch columns come back empty:** in
 `client/DataCollectionBatchClient.js`, `MEASUREMENTS_PATH` (`/datacollection/v1/measurements`)
 mirrors the OpenAPI spec's declared base URL segment, but it hasn't been confirmed that

@@ -163,10 +163,12 @@ sap.ui.define([
                 const sPlant = PodContext.getPlant();
                 const sOrder = PodContext.getLastSelectedWorkListItem()?.order;
 
-                oLogger.info("[FinishedSfcList] Resolved context", { plant: sPlant, order: sOrder });
+                // warn (not info) deliberately — this tenant's effective Logger level
+                // filters out INFO entirely, so these would otherwise never reach the console.
+                oLogger.warn("[FinishedSfcList] Resolved context", { plant: sPlant, order: sOrder });
 
                 if (!sPlant || !sOrder) {
-                    oLogger.info("[FinishedSfcList] Plant or order not available yet, showing empty list");
+                    oLogger.warn("[FinishedSfcList] Plant or order not available yet, showing empty list");
                     PodContext.set(this._getModelPath(), []);
                     return;
                 }
@@ -207,7 +209,7 @@ sap.ui.define([
                 statusCode: SFCStatusCode.COMPLETED
             });
 
-            oLogger.info("[FinishedSfcList] Finished SFCs fetched", { order: sOrder, count: aFinished.length });
+            oLogger.warn("[FinishedSfcList] Finished SFCs fetched", { order: sOrder, count: aFinished.length });
 
             return aFinished;
         }

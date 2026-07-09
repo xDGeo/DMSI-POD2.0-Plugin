@@ -76,7 +76,12 @@ sap.ui.define([
                     "invalid combination. Set the Group Version property to fix this.");
             }
 
-            oLogger.info("[DataCollectionBatchClient] Fetching batch info", {
+            // Using warn (not info) deliberately: this tenant's effective Logger level
+            // filters out INFO, so info() calls never reach the console at all — confirmed
+            // when Logger.setDefaultLevel(DEBUG) set via the browser console had no effect
+            // because a full page reload wipes that in-memory override before the widget's
+            // onInit() (and its first fetch) even runs. warn() is confirmed visible.
+            oLogger.warn("[DataCollectionBatchClient] Fetching batch info", {
                 plant: sPlant,
                 sfcCount: aSfcs.length,
                 group: bHasGroup ? sGroup : "(none)",
@@ -135,7 +140,7 @@ sap.ui.define([
 
                 const oResponse = await RestClient.get(MEASUREMENTS_PATH, oQuery);
 
-                oLogger.info("[DataCollectionBatchClient] Raw response", {
+                oLogger.warn("[DataCollectionBatchClient] Raw response", {
                     sfc: sSfc,
                     parameterName: sParameterName,
                     response: oResponse
@@ -154,7 +159,7 @@ sap.ui.define([
                 // failure, so it's logged quietly instead of as an error. Anything else (500,
                 // network failure, wrong path, etc.) still logs as an error.
                 if (this.#getStatusCode(oError) === 404) {
-                    oLogger.info("[DataCollectionBatchClient] No value logged for this SFC/parameter", {
+                    oLogger.warn("[DataCollectionBatchClient] No value logged for this SFC/parameter", {
                         sfc: sSfc,
                         parameterName: sParameterName
                     });

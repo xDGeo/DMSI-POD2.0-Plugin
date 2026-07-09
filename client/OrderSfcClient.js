@@ -47,7 +47,9 @@ sap.ui.define([
             const oOrder = await this.#oOrderClient.getOrder({ plant: sPlant, order: sOrder });
             const aSfcs = (oOrder?.sfcs ?? []).slice(0, MAX_SFCS);
 
-            oLogger.info("[OrderSfcClient] Order fetched", { order: sOrder, sfcCount: aSfcs.length });
+            // warn (not info) deliberately — this tenant's effective Logger level filters
+            // out INFO entirely, so this would otherwise never reach the console.
+            oLogger.warn("[OrderSfcClient] Order fetched", { order: sOrder, sfcCount: aSfcs.length });
 
             const aDetails = await Promise.all(aSfcs.map((sSfc) => this.#fetchSfcDetail(sPlant, sSfc)));
 
