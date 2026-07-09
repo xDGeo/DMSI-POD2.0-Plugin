@@ -88,13 +88,26 @@ batch columns come back empty even when everything else works.
 `client/DataCollectionBatchClient.js`, `MEASUREMENTS_PATH` (`/datacollection/v1/measurements`)
 mirrors the OpenAPI spec's declared base URL segment, but it hasn't been confirmed that
 `RestClient` resolves relative paths against that exact base on this tenant — check this
-first if the call itself 404s. Also unconfirmed: that `PodContext.getFilterOperationActivities()`
-and `getFilterResources()` reliably reflect the operation/resource this specific POD is
-working within at the moment the widget fetches. Every call now logs its raw response
+first if the call itself 404s. Every call now logs its raw response
 (`[DataCollectionBatchClient] Raw response`) so the actual response shape and content can be
 inspected directly in the console rather than assumed — check this log first if values still
 don't appear. A failure here is isolated (see below) and only blanks the batch columns, not
 the whole list.
+
+**Fixed:** a real 404 (visible via `[DataCollectionBatchClient] Failed to fetch measurement`
+in the console, with the failing URL logged by the browser) revealed two concrete bugs:
+1. `sfcs` was passed as a one-element JS array; `RestClient.get()` serialized it as
+   `sfcs.0=<value>` rather than `sfcs=<value>`, which the backend doesn't recognize as the
+   `sfcs` parameter at all. Since only one SFC is ever queried per call, `sfcs` is now passed
+   as a plain string instead of an array, producing the correct `sfcs=<value>`.
+2. `operation.name`/`operation.version`/`dcGroup.version` were completely absent from the
+   logged URL — `PodContext.getFilterOperationActivities()` returns nothing in this pod
+   (it's a worklist-filter concept, and this widget is deployed in an execution-type pod
+   where that path apparently isn't populated), while `getFilterResources()` worked fine.
+   Added a fallback to `PodContext.getLastSelectedOperationActivity()?.operationActivity` for
+   the operation name; that type has no version field, so `operation.version` may still be
+   unresolved — check the `[DataCollectionBatchClient] Fetching batch info` log line to
+   confirm whether it resolved.
 
 **Fixed (root cause):** the widget originally fetched SFCs via `SfcPublicApiClient.getSfcs()`,
 which wraps the SFC Work List REST API. That API's `sfcStatuses` filter only supports

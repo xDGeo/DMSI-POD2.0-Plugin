@@ -224,7 +224,16 @@ sap.ui.define([
                 // resource as optional refinements. "Current" here means the operation
                 // activity and resource this POD is presently working within — resolved from
                 // PodContext, not configured.
-                const oOperationActivity = PodContext.getFilterOperationActivities()?.[0];
+                //
+                // getFilterOperationActivities() is empty in this pod (it's a worklist-scoping
+                // concept, not necessarily populated in an execution-type pod), so fall back to
+                // getLastSelectedOperationActivity() for the name — note that type doesn't
+                // carry a version field, so operationVersion may still end up unresolved here.
+                const oFilterOperationActivity = PodContext.getFilterOperationActivities()?.[0];
+                const oLastSelectedOperationActivity = PodContext.getLastSelectedOperationActivity();
+                const sOperationName = oFilterOperationActivity?.operationActivity
+                    ?? oLastSelectedOperationActivity?.operationActivity;
+                const sOperationVersion = oFilterOperationActivity?.operationActivityVersion;
                 const sResource = PodContext.getFilterResources()?.[0]?.resource;
 
                 return await this.#oBatchClient.getBatchInfo({
@@ -234,8 +243,8 @@ sap.ui.define([
                     predecessorParameter: this.getPropertyValue(FinishedSfcList.PropertyId.PredecessorBatchParameterName),
                     group: this.getPropertyValue(FinishedSfcList.PropertyId.DataCollectionGroup),
                     groupVersion: this.getPropertyValue(FinishedSfcList.PropertyId.DataCollectionGroupVersion),
-                    operationName: oOperationActivity?.operationActivity,
-                    operationVersion: oOperationActivity?.operationActivityVersion,
+                    operationName: sOperationName,
+                    operationVersion: sOperationVersion,
                     resource: sResource
                 });
             } catch (oError) {

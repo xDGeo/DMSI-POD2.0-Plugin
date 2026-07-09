@@ -117,7 +117,13 @@ sap.ui.define([
          */
         async #fetchParameterInto(mResult, sSfc, sField, oContext, sParameterName) {
             try {
-                const oQuery = { plant: oContext.sPlant, sfcs: [sSfc], parameterName: sParameterName };
+                // sfcs is documented as an array (collectionFormat "multi" = repeated
+                // sfcs=X&sfcs=Y), but RestClient.get() serializes a JS array as indexed keys
+                // (sfcs.0=X) instead — which the backend doesn't recognize as the sfcs
+                // parameter at all (confirmed via a 404 with sfcs.0= in the resulting URL).
+                // Passing a plain string here instead produces the correct sfcs=X, which is
+                // sufficient since we only ever query one SFC per call.
+                const oQuery = { plant: oContext.sPlant, sfcs: sSfc, parameterName: sParameterName };
 
                 if (oContext.sOperationName) { oQuery["operation.name"] = oContext.sOperationName; }
                 if (oContext.sOperationVersion) { oQuery["operation.version"] = oContext.sOperationVersion; }
