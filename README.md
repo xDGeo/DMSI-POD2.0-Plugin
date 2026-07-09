@@ -45,20 +45,22 @@ Number, plus a **Total** row at the end summing the quantity column.
   the deprecated `GET /parameters` endpoint. There's no typed POD 2.0 SDK client for this
   specific endpoint (`DataCollectionPublicApiClient` only exposes group/parameter
   *definitions*, not collected *values*), so it's called directly — the same pattern the
-  sample `ExternalDataFetchAction` uses for first-party REST calls. Per the API's own
-  documentation, only `plant` is strictly required; `dcGroup.name`/`.version`,
-  `operation.name`/`.version`, `resource`, and `parameterName` are all optional refinements —
-  but every one of them is passed through when available, matching the full documented
-  parameter set rather than guessing which subset actually matters:
-  - `operation.name`/`operation.version` from `PodContext.getFilterOperationActivities()?.[0]`
-    (the operation activity this POD is currently working within, not user-configured).
-  - `resource` from `PodContext.getFilterResources()?.[0]?.resource`.
-  - `dcGroup.name`/`dcGroup.version` from the **Data Collection Group**/**Data Collection
-    Group Version** properties below.
-  - `parameterName` set per call to the batch or predecessor batch parameter — two calls are
-    made per SFC (one per parameter, since `parameterName` only accepts a single value),
-    calling per-SFC rather than passing all SFCs in one bulk `sfcs` array (which would rely on
-    how `RestClient` serializes a multi-value query parameter — unconfirmed).
+  sample `ExternalDataFetchAction` uses for first-party REST calls.
+
+  **Confirmed via side-by-side Postman tests against the tenant** (not guessed): the correct
+  and sufficient request is `plant` + `sfcs` + `dcGroup.name` + `dcGroup.version` (+ optionally
+  `parameterName`). `operation.name`/`operation.version`/`resource` are **not** sent — both
+  successful test calls omitted them entirely, so they were dropped from the client to keep
+  it simple and avoid depending on `PodContext` paths that don't reliably resolve in every pod
+  type.
+  - `dcGroup.name`/`dcGroup.version` come from the **Data Collection Group**/**Data Collection
+    Group Version** properties below, and are only sent as a pair — if either is blank, both
+    are omitted, since sending `dcGroup.name` without `dcGroup.version` was confirmed to 404.
+  - `parameterName` is set per call to the batch or predecessor batch parameter — two calls
+    are made per SFC (one per parameter, since `parameterName` only accepts a single value).
+  - `sfcs` is sent as a plain string (one SFC per call), not an array — `RestClient.get()`
+    serializes a JS array as `sfcs.0=<value>`, which the backend doesn't recognize as the
+    `sfcs` parameter at all (confirmed via a 404 with that literal query string).
 - Falls back to the SFC's `defaultBatchId` if no matching Data Collection value is found.
 
 **POD Designer configuration:**
@@ -88,26 +90,13 @@ batch columns come back empty even when everything else works.
 `client/DataCollectionBatchClient.js`, `MEASUREMENTS_PATH` (`/datacollection/v1/measurements`)
 mirrors the OpenAPI spec's declared base URL segment, but it hasn't been confirmed that
 `RestClient` resolves relative paths against that exact base on this tenant — check this
-first if the call itself 404s. Every call now logs its raw response
+first if the call itself 404s. Every call logs its raw response
 (`[DataCollectionBatchClient] Raw response`) so the actual response shape and content can be
 inspected directly in the console rather than assumed — check this log first if values still
 don't appear. A failure here is isolated (see below) and only blanks the batch columns, not
-the whole list.
-
-**Fixed:** a real 404 (visible via `[DataCollectionBatchClient] Failed to fetch measurement`
-in the console, with the failing URL logged by the browser) revealed two concrete bugs:
-1. `sfcs` was passed as a one-element JS array; `RestClient.get()` serialized it as
-   `sfcs.0=<value>` rather than `sfcs=<value>`, which the backend doesn't recognize as the
-   `sfcs` parameter at all. Since only one SFC is ever queried per call, `sfcs` is now passed
-   as a plain string instead of an array, producing the correct `sfcs=<value>`.
-2. `operation.name`/`operation.version`/`dcGroup.version` were completely absent from the
-   logged URL — `PodContext.getFilterOperationActivities()` returns nothing in this pod
-   (it's a worklist-filter concept, and this widget is deployed in an execution-type pod
-   where that path apparently isn't populated), while `getFilterResources()` worked fine.
-   Added a fallback to `PodContext.getLastSelectedOperationActivity()?.operationActivity` for
-   the operation name; that type has no version field, so `operation.version` may still be
-   unresolved — check the `[DataCollectionBatchClient] Fetching batch info` log line to
-   confirm whether it resolved.
+the whole list. If a warning logs that Group is set but Group Version is blank (or vice
+versa), that's the **Data Collection Group Version** property not being set on this widget
+instance in POD Designer — the two must be set together.
 
 **Fixed (root cause):** the widget originally fetched SFCs via `SfcPublicApiClient.getSfcs()`,
 which wraps the SFC Work List REST API. That API's `sfcStatuses` filter only supports
@@ -123,24 +112,13 @@ switched to `client/OrderSfcClient.js` instead — no field names guessed, every
 (`sfcs`, `quantity`, `status.code`, `defaultBatchId`) is documented in the public API specs.
 
 **Also fixed — batch/predecessor batch lookup history:** `client/DataCollectionBatchClient.js`
-went through several iterations before landing on the design described above:
-1. Originally queried the `DATA_COLLECTION` MDO via OData with guessed field names.
-2. Switched to the Data Collection API's `GET /measurements` REST endpoint once its OpenAPI
-   spec was available — but the response-parsing code assumed the response matched that
-   spec's documented schema (`{ data: [{ parameter: {...} }] }`) without ever confirming it
-   against a real call, and only `plant` was passed (per the spec's stated requirements).
-3. A test directly against the tenant returned `operation.name`/`operation.version`/
-   `resource` as apparently required — but that test turned out to be against the
-   **deprecated** `GET /parameters` endpoint, not `/measurements`; briefly switched to
-   `/parameters` to match, then reverted since it's deprecated.
-4. The tenant's actual API documentation for `/measurements` (not a test, the real parameter
-   list) showed only `plant` is required — `operation.name`/`.version`, `resource`,
-   `dcGroup.name`/`.version`, and `parameterName` are all optional but accepted. All of them
-   are now passed when available, matching that documentation exactly.
-5. Response parsing was made tolerant of multiple possible shapes (bare array vs
-   `.data`-wrapped, singular `parameter` vs plural `parameters`) since the actual
-   `/measurements` response shape still hasn't been directly confirmed — and every call now
-   logs its raw response so this can be verified from the browser console instead of assumed.
+went through several incorrect iterations (guessed MDO field names → `/measurements` with
+only `plant` → briefly the deprecated `/parameters` endpoint with `operation`/`resource`
+believed required) before a direct 404 in the console, followed by side-by-side Postman
+tests against the tenant, confirmed the actual minimal correct request described above.
+Response parsing stays tolerant of multiple possible shapes (bare array vs `.data`-wrapped,
+singular `parameter` vs plural `parameters`) as a safety net, though the confirmed
+`/measurements` response now matches the `.data`-wrapped/singular-`parameter` shape exactly.
 
 **Also fixed:** an earlier version shared one `try/catch` across both the SFC-list fetch and
 the batch-info fetch, so a failure in the batch lookup (e.g. wrong parameter/field name)

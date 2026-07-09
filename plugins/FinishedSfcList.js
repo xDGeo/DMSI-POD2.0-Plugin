@@ -220,32 +220,16 @@ sap.ui.define([
          */
         async _fetchBatchInfo(sPlant, aFinished) {
             try {
-                // The Data Collection /measurements API accepts operation.name/.version and
-                // resource as optional refinements. "Current" here means the operation
-                // activity and resource this POD is presently working within — resolved from
-                // PodContext, not configured.
-                //
-                // getFilterOperationActivities() is empty in this pod (it's a worklist-scoping
-                // concept, not necessarily populated in an execution-type pod), so fall back to
-                // getLastSelectedOperationActivity() for the name — note that type doesn't
-                // carry a version field, so operationVersion may still end up unresolved here.
-                const oFilterOperationActivity = PodContext.getFilterOperationActivities()?.[0];
-                const oLastSelectedOperationActivity = PodContext.getLastSelectedOperationActivity();
-                const sOperationName = oFilterOperationActivity?.operationActivity
-                    ?? oLastSelectedOperationActivity?.operationActivity;
-                const sOperationVersion = oFilterOperationActivity?.operationActivityVersion;
-                const sResource = PodContext.getFilterResources()?.[0]?.resource;
-
+                // Confirmed via side-by-side Postman tests: plant + sfcs + dcGroup.name +
+                // dcGroup.version is sufficient. operation.name/.version/resource are not
+                // needed and are deliberately not sent.
                 return await this.#oBatchClient.getBatchInfo({
                     plant: sPlant,
                     sfcs: aFinished.map((oSfc) => oSfc.sfc),
                     batchParameter: this.getPropertyValue(FinishedSfcList.PropertyId.BatchParameterName),
                     predecessorParameter: this.getPropertyValue(FinishedSfcList.PropertyId.PredecessorBatchParameterName),
                     group: this.getPropertyValue(FinishedSfcList.PropertyId.DataCollectionGroup),
-                    groupVersion: this.getPropertyValue(FinishedSfcList.PropertyId.DataCollectionGroupVersion),
-                    operationName: sOperationName,
-                    operationVersion: sOperationVersion,
-                    resource: sResource
+                    groupVersion: this.getPropertyValue(FinishedSfcList.PropertyId.DataCollectionGroupVersion)
                 });
             } catch (oError) {
                 oLogger.error("[FinishedSfcList] Failed to load batch info", { message: oError.message });
