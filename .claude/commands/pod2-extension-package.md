@@ -35,17 +35,17 @@ extension package root — `extension.json` lives at the top level).
 
 4. Create a new zip archive named `dmsi-pod2-extension.zip` containing **all content inside**
    the directory (not the directory itself). Exclude macOS metadata, `.git`, `.claude`, and
-   this project's own docs/context files.
+   this project's own docs/context/scratch files.
    - On macOS/Linux:
      ```bash
      cd "$SOURCE" && zip -r dmsi-pod2-extension.zip . \
        --exclude "*.DS_Store" --exclude "__MACOSX/*" \
        --exclude ".git/*" --exclude ".claude/*" \
-       --exclude "Context.md" --exclude "*.zip"
+       --exclude "Context.md" --exclude "1.txt" --exclude "image.png" --exclude "*.zip"
      ```
    - On Windows (PowerShell):
      ```powershell
-     $items = Get-ChildItem -Path $SOURCE | Where-Object { $_.Name -notin @(".git", ".claude", "Context.md") -and $_.Extension -ne ".zip" }
+     $items = Get-ChildItem -Path $SOURCE | Where-Object { $_.Name -notin @(".git", ".claude", "Context.md", "1.txt", "image.png") -and $_.Extension -ne ".zip" }
      Compress-Archive -Path $items.FullName -DestinationPath "$SOURCE\dmsi-pod2-extension.zip" -Force
      ```
 
