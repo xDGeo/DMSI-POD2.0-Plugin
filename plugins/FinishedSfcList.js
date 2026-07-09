@@ -38,6 +38,7 @@ sap.ui.define([
     const DEFAULT_BATCH_PARAMETER = "BATCH";
     const DEFAULT_PREDECESSOR_PARAMETER = "IP_PREDECESSOR_BATCH";
     const DEFAULT_DATA_COLLECTION_GROUP = "BATCH_CHARS";
+    const DEFAULT_DATA_COLLECTION_GROUP_VERSION = "A";
 
     /**
      * Lists all finished (COMPLETED) SFCs of the order behind the currently selected
@@ -64,7 +65,8 @@ sap.ui.define([
         static PropertyId = Object.freeze({
             BatchParameterName: "batchParameterName",
             PredecessorBatchParameterName: "predecessorBatchParameterName",
-            DataCollectionGroup: "dataCollectionGroup"
+            DataCollectionGroup: "dataCollectionGroup",
+            DataCollectionGroupVersion: "dataCollectionGroupVersion"
         });
 
         static Field = Object.freeze({
@@ -98,7 +100,8 @@ sap.ui.define([
                     ...oConfig.properties,
                     [FinishedSfcList.PropertyId.BatchParameterName]: DEFAULT_BATCH_PARAMETER,
                     [FinishedSfcList.PropertyId.PredecessorBatchParameterName]: DEFAULT_PREDECESSOR_PARAMETER,
-                    [FinishedSfcList.PropertyId.DataCollectionGroup]: DEFAULT_DATA_COLLECTION_GROUP
+                    [FinishedSfcList.PropertyId.DataCollectionGroup]: DEFAULT_DATA_COLLECTION_GROUP,
+                    [FinishedSfcList.PropertyId.DataCollectionGroupVersion]: DEFAULT_DATA_COLLECTION_GROUP_VERSION
                 }
             };
         }
@@ -108,9 +111,9 @@ sap.ui.define([
             const thisI18n = this.getI18nText.bind(this);
             return [
                 { field: this.Field.Sfc, importance: Priority.High, sortable: false, text: thisI18n("FinishedSfcList.sfc") },
-                { field: this.Field.Quantity, importance: Priority.High, sortable: false, text: thisI18n("FinishedSfcList.quantity") },
                 { field: this.Field.BatchNumber, importance: Priority.High, sortable: false, text: thisI18n("FinishedSfcList.batchNumber") },
-                { field: this.Field.PredecessorBatchNumber, importance: Priority.High, sortable: false, text: thisI18n("FinishedSfcList.predecessorBatchNumber") }
+                { field: this.Field.PredecessorBatchNumber, importance: Priority.High, sortable: false, text: thisI18n("FinishedSfcList.predecessorBatchNumber") },
+                { field: this.Field.Quantity, importance: Priority.High, sortable: false, text: thisI18n("FinishedSfcList.quantity") }
             ];
         }
 
@@ -217,12 +220,22 @@ sap.ui.define([
          */
         async _fetchBatchInfo(sPlant, aFinished) {
             try {
+                // The Data Collection /parameters API requires the current operation and
+                // resource. "Current" here means the operation activity and resource this
+                // POD is presently working within — resolved from PodContext, not configured.
+                const oOperationActivity = PodContext.getFilterOperationActivities()?.[0];
+                const sResource = PodContext.getFilterResources()?.[0]?.resource;
+
                 return await this.#oBatchClient.getBatchInfo({
                     plant: sPlant,
                     sfcs: aFinished.map((oSfc) => oSfc.sfc),
                     batchParameter: this.getPropertyValue(FinishedSfcList.PropertyId.BatchParameterName),
                     predecessorParameter: this.getPropertyValue(FinishedSfcList.PropertyId.PredecessorBatchParameterName),
-                    group: this.getPropertyValue(FinishedSfcList.PropertyId.DataCollectionGroup)
+                    group: this.getPropertyValue(FinishedSfcList.PropertyId.DataCollectionGroup),
+                    groupVersion: this.getPropertyValue(FinishedSfcList.PropertyId.DataCollectionGroupVersion),
+                    operationName: oOperationActivity?.operationActivity,
+                    operationVersion: oOperationActivity?.operationActivityVersion,
+                    resource: sResource
                 });
             } catch (oError) {
                 oLogger.error("[FinishedSfcList] Failed to load batch info", { message: oError.message });
@@ -294,6 +307,12 @@ sap.ui.define([
                     description: this.getI18nText("FinishedSfcList.prop.dataCollectionGroupDesc"),
                     category: PropertyCategory.Data,
                     propertyEditor: new StringPropertyEditor(this, FinishedSfcList.PropertyId.DataCollectionGroup)
+                }),
+                new WidgetProperty({
+                    displayName: this.getI18nText("FinishedSfcList.prop.dataCollectionGroupVersion"),
+                    description: this.getI18nText("FinishedSfcList.prop.dataCollectionGroupVersionDesc"),
+                    category: PropertyCategory.Data,
+                    propertyEditor: new StringPropertyEditor(this, FinishedSfcList.PropertyId.DataCollectionGroupVersion)
                 })
             ];
         }
