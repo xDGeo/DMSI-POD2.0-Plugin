@@ -1,0 +1,11 @@
+{
+    "widgets": [
+        {
+            "modulePath": "dmsi/pod2/plugins/FinishedSfcList",
+            "type": "dmsi.pod2.plugins.FinishedSfcList",
+            "name": "Finished SFC List",
+            "description": "Lists all finished SFCs of the selected order with split quantity, batch number, predecessor batch number, and a total quantity row."
+        }
+    ],
+    "actions": []
+}
