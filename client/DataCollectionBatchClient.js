@@ -11,28 +11,26 @@ sap.ui.define([
 
     const oLogger = Logger.getLogger("dmsi.pod2.client.DataCollectionBatchClient");
 
-    // Uses the Data Collection API's GET /parameters endpoint (getLoggedSfcDataUsingGET),
-    // confirmed against that API's OpenAPI spec — operation.name, operation.version, plant,
-    // resource, and sfcs are all required there (unlike GET /measurements, which only
-    // requires plant; /parameters is what actually matches the required-field set observed
-    // when testing directly against the tenant). There's no typed POD 2.0 SDK wrapper for
-    // this endpoint (DataCollectionPublicApiClient only exposes group/parameter
-    // *definitions*, not collected *values*), so it's called directly via RestClient — the
-    // same sanctioned mechanism used by the sample ExternalDataFetchAction for first-party
-    // REST calls.
+    // Uses the Data Collection API's GET /measurements endpoint (getLoggedMeasuresUsingGET) —
+    // NOT the deprecated GET /parameters endpoint (getLoggedSfcDataUsingGET). A working test
+    // directly against the tenant confirmed operation.name, operation.version, resource, and
+    // sfcs are required in practice (the /measurements OpenAPI spec lists them as optional,
+    // but the real backend behaves like /parameters here) and that dcGroup is NOT needed —
+    // parameterName alone is sufficient to isolate the batch/predecessor batch values. There's
+    // no typed POD 2.0 SDK wrapper for this endpoint (DataCollectionPublicApiClient only
+    // exposes group/parameter *definitions*, not collected *values*), so it's called directly
+    // via RestClient — the same sanctioned mechanism used by the sample ExternalDataFetchAction
+    // for first-party REST calls.
     //
-    // One call per SFC (plant/operation/resource from PodContext, sfc as the input), scoped
-    // to the confirmed Data Collection Group (BATCH_CHARS, version A) rather than filtering
-    // by parameterName — this fetches every parameter in that group for the SFC in a single
-    // small response, from which both the batch and predecessor batch values are read
-    // client-side. Calling per-SFC (rather than passing all SFCs in one bulk "sfcs" array)
-    // avoids relying on how RestClient serializes a multi-value query parameter, which isn't
-    // confirmed.
+    // Two calls per SFC (one per parameter — parameterName only accepts a single value), with
+    // plant/operation/resource all resolved from PodContext, not configured. Calling per-SFC
+    // (rather than passing all SFCs in one bulk "sfcs" array) avoids relying on how RestClient
+    // serializes a multi-value query parameter, which isn't confirmed.
     //
     // ASSUMPTION: the relative path below mirrors the OpenAPI spec's base URL segment
-    // (.../datacollection/v1/parameters). Not yet confirmed that RestClient resolves it this
+    // (.../datacollection/v1/measurements). Not yet confirmed that RestClient resolves it this
     // way on this tenant — check this first if a call 404s.
-    const PARAMETERS_PATH = "/datacollection/v1/parameters";
+    const MEASUREMENTS_PATH = "/datacollection/v1/measurements";
     const MAX_SFCS = 200;
 
     class DataCollectionBatchClient {
@@ -45,11 +43,9 @@ sap.ui.define([
          * @param {Array<string>} oRequest.sfcs
          * @param {string} oRequest.batchParameter - Data collection parameter name holding the batch number.
          * @param {string} oRequest.predecessorParameter - Data collection parameter name holding the predecessor batch number.
-         * @param {string} oRequest.operationName - The current operation name (required by the API).
-         * @param {string} oRequest.operationVersion - The current operation version (required by the API).
-         * @param {string} oRequest.resource - The current resource (required by the API).
-         * @param {string} [oRequest.group] - Data collection group to scope the query to (e.g. BATCH_CHARS).
-         * @param {string} [oRequest.groupVersion] - Data collection group version (e.g. A).
+         * @param {string} oRequest.operationName - The current operation name (required by the API in practice).
+         * @param {string} oRequest.operationVersion - The current operation version (required by the API in practice).
+         * @param {string} oRequest.resource - The current resource (required by the API in practice).
          * @returns {Promise<Object<string, {batchNumber: string, predecessorBatchNumber: string}>>} Keyed by SFC.
          * @throws {Error} If validation fails.
          */
@@ -60,8 +56,6 @@ sap.ui.define([
             const aSfcs = (oRequest.sfcs ?? []).filter(Boolean).slice(0, MAX_SFCS);
             const sBatchParam = oRequest.batchParameter?.trim();
             const sPredecessorParam = oRequest.predecessorParameter?.trim();
-            const sGroup = oRequest.group?.trim();
-            const sGroupVersion = oRequest.groupVersion?.trim();
             const sOperationName = oRequest.operationName?.trim();
             const sOperationVersion = oRequest.operationVersion?.trim();
             const sResource = oRequest.resource?.trim();
@@ -72,7 +66,7 @@ sap.ui.define([
 
             if (!sOperationName || !sOperationVersion || !sResource) {
                 oLogger.warn("[DataCollectionBatchClient] Missing operation/resource context — " +
-                    "cannot call the Data Collection /parameters API (all three are required)", {
+                    "cannot call the Data Collection /measurements API (all three are required)", {
                     operationName: sOperationName || "(missing)",
                     operationVersion: sOperationVersion || "(missing)",
                     resource: sResource || "(missing)"
@@ -86,73 +80,64 @@ sap.ui.define([
                 operationName: sOperationName,
                 operationVersion: sOperationVersion,
                 resource: sResource,
-                group: sGroup || "(none)",
-                groupVersion: sGroupVersion || "(none)"
+                batchParameter: sBatchParam,
+                predecessorParameter: sPredecessorParam
             });
 
             const mResult = {};
+            aSfcs.forEach((sSfc) => { mResult[sSfc] = { batchNumber: "", predecessorBatchNumber: "" }; });
 
-            await Promise.all(aSfcs.map((sSfc) =>
-                this.#fetchSfcInto(
-                    mResult, sPlant, sSfc, sOperationName, sOperationVersion, sResource,
-                    sGroup, sGroupVersion, sBatchParam, sPredecessorParam
-                )
-            ));
+            const aFetches = [];
+            if (sBatchParam) {
+                aFetches.push(...aSfcs.map((sSfc) =>
+                    this.#fetchParameterInto(mResult, sSfc, "batchNumber", sPlant, sOperationName, sOperationVersion, sResource, sBatchParam)
+                ));
+            }
+            if (sPredecessorParam) {
+                aFetches.push(...aSfcs.map((sSfc) =>
+                    this.#fetchParameterInto(mResult, sSfc, "predecessorBatchNumber", sPlant, sOperationName, sOperationVersion, sResource, sPredecessorParam)
+                ));
+            }
+            await Promise.all(aFetches);
 
             const iFoundCount = Object.values(mResult).filter((o) => o.batchNumber || o.predecessorBatchNumber).length;
             if (!iFoundCount) {
                 oLogger.warn("[DataCollectionBatchClient] No batch/predecessor batch values found for any SFC " +
-                    "— verify the parameterName/group/version/operation/resource values are correct " +
-                    "(case-sensitive).");
+                    "— verify the parameterName/operation/resource values are correct (case-sensitive).");
             }
 
             return mResult;
         }
 
         /**
-         * Fetches all Data Collection Group parameters for a single SFC and picks out the
-         * batch/predecessor batch values. Failures are logged and swallowed so one bad SFC
-         * doesn't block the rest.
+         * Fetches a single parameter's collected value for a single SFC and writes it into
+         * mResult under sField. Failures are logged and swallowed so one bad call doesn't
+         * block the rest.
          * @private
          * @async
          */
-        async #fetchSfcInto(
-            mResult, sPlant, sSfc, sOperationName, sOperationVersion, sResource,
-            sGroup, sGroupVersion, sBatchParam, sPredecessorParam
-        ) {
-            mResult[sSfc] = { batchNumber: "", predecessorBatchNumber: "" };
-
+        async #fetchParameterInto(mResult, sSfc, sField, sPlant, sOperationName, sOperationVersion, sResource, sParameterName) {
             try {
                 const oQuery = {
                     plant: sPlant,
                     sfcs: [sSfc],
                     "operation.name": sOperationName,
                     "operation.version": sOperationVersion,
-                    resource: sResource
+                    resource: sResource,
+                    parameterName: sParameterName
                 };
-                if (sGroup) {
-                    oQuery["dcGroup.name"] = sGroup;
-                }
-                if (sGroupVersion) {
-                    oQuery["dcGroup.version"] = sGroupVersion;
-                }
 
-                const aResponse = await RestClient.get(PARAMETERS_PATH, oQuery);
-                const aParameters = aResponse?.[0]?.parameters ?? [];
+                const oResponse = await RestClient.get(MEASUREMENTS_PATH, oQuery);
+                const aRecords = oResponse?.data ?? [];
+                const oMatch = aRecords.find((oRecord) => oRecord.parameter?.measureName === sParameterName);
 
-                for (const oParam of aParameters) {
-                    const sParamName = oParam.measureName;
-                    const sValue = oParam.actual ?? "";
-
-                    if (sParamName === sBatchParam && !mResult[sSfc].batchNumber) {
-                        mResult[sSfc].batchNumber = sValue;
-                    } else if (sParamName === sPredecessorParam && !mResult[sSfc].predecessorBatchNumber) {
-                        mResult[sSfc].predecessorBatchNumber = sValue;
-                    }
+                if (oMatch) {
+                    mResult[sSfc][sField] = oMatch.parameter?.actual ?? "";
                 }
             } catch (oError) {
-                oLogger.error("[DataCollectionBatchClient] Failed to fetch parameters for SFC", {
+                oLogger.error("[DataCollectionBatchClient] Failed to fetch measurement", {
                     sfc: sSfc,
+                    parameterName: sParameterName,
                     message: oError.message
                 });
             }
