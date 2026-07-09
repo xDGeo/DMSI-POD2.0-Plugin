@@ -9,7 +9,7 @@ sap.ui.define([
     "sap/dm/dme/pod2/propertyeditor/StringPropertyEditor",
     "sap/dm/dme/pod2/propertyeditor/PropertyCategory",
     "sap/dm/dme/pod2/enumeration/SFCStatusCode",
-    "sap/dm/dme/pod2/api/sfc/SfcPublicApiClient",
+    "dmsi/pod2/client/OrderSfcClient",
     "dmsi/pod2/client/DataCollectionBatchClient",
     "sap/dm/dme/pod2/Logger"
 ], (
@@ -23,7 +23,7 @@ sap.ui.define([
     StringPropertyEditor,
     PropertyCategory,
     SFCStatusCode,
-    SfcPublicApiClient,
+    OrderSfcClient,
     DataCollectionBatchClient,
     Logger
 ) => {
@@ -34,15 +34,26 @@ sap.ui.define([
 
     const oLogger = Logger.getLogger("dmsi.pod2.plugins.FinishedSfcList");
 
-    // Confirmed against a live tenant's SFC > Data Collections tab (group BATCH_CHARS).
+    // Confirmed against a live tenant's SFC > Data Collections tab.
     const DEFAULT_BATCH_PARAMETER = "BATCH";
     const DEFAULT_PREDECESSOR_PARAMETER = "IP_PREDECESSOR_BATCH";
+    const DEFAULT_DATA_COLLECTION_GROUP = "BATCH_CHARS";
 
     /**
      * Lists all finished (COMPLETED) SFCs of the order behind the currently selected
      * work list item, together with the SFC's split quantity, batch number, and predecessor
      * batch number (both read from Data Collection). A totals row with the summed quantity
      * is appended at the end of the list.
+     *
+     * The order number is the key input parameter driving the whole query: it's resolved
+     * from PodContext once per fetch and passed explicitly into every downstream call
+     * (OrderSfcClient, DataCollectionBatchClient) rather than re-read from context deeper in
+     * the call chain. Finished SFCs are read via OrderSfcClient (Order API's getOrder().sfcs
+     * combined with per-SFC getSfcDetail()), not the SFC Work List REST API
+     * (SfcPublicApiClient.getSfcs()), because that REST API only supports
+     * NEW/IN_QUEUE/ACTIVE/HOLD as status filters — completed SFCs are excluded from "work
+     * list" results by design and would never be returned no matter how they're filtered
+     * client-side.
      */
     class FinishedSfcList extends TableWidget {
 
@@ -52,7 +63,8 @@ sap.ui.define([
 
         static PropertyId = Object.freeze({
             BatchParameterName: "batchParameterName",
-            PredecessorBatchParameterName: "predecessorBatchParameterName"
+            PredecessorBatchParameterName: "predecessorBatchParameterName",
+            DataCollectionGroup: "dataCollectionGroup"
         });
 
         static Field = Object.freeze({
@@ -85,7 +97,8 @@ sap.ui.define([
                 properties: {
                     ...oConfig.properties,
                     [FinishedSfcList.PropertyId.BatchParameterName]: DEFAULT_BATCH_PARAMETER,
-                    [FinishedSfcList.PropertyId.PredecessorBatchParameterName]: DEFAULT_PREDECESSOR_PARAMETER
+                    [FinishedSfcList.PropertyId.PredecessorBatchParameterName]: DEFAULT_PREDECESSOR_PARAMETER,
+                    [FinishedSfcList.PropertyId.DataCollectionGroup]: DEFAULT_DATA_COLLECTION_GROUP
                 }
             };
         }
@@ -101,7 +114,7 @@ sap.ui.define([
             ];
         }
 
-        #oClient = new SfcPublicApiClient();
+        #oSfcClient = new OrderSfcClient();
         #oBatchClient = new DataCollectionBatchClient();
         #bIsLoading = false;
 
@@ -147,7 +160,10 @@ sap.ui.define([
                 const sPlant = PodContext.getPlant();
                 const sOrder = PodContext.getLastSelectedWorkListItem()?.order;
 
+                oLogger.info("[FinishedSfcList] Resolved context", { plant: sPlant, order: sOrder });
+
                 if (!sPlant || !sOrder) {
+                    oLogger.info("[FinishedSfcList] Plant or order not available yet, showing empty list");
                     PodContext.set(this._getModelPath(), []);
                     return;
                 }
@@ -175,20 +191,22 @@ sap.ui.define([
         }
 
         /**
-         * Fetches all SFCs of the given order and keeps only the finished (COMPLETED) ones.
+         * Fetches SFCs of the given order that are already finished (COMPLETED), via
+         * OrderSfcClient (see class doc for why the Work List REST API can't be used for
+         * this).
          * @private
          * @async
          */
         async _fetchFinishedSfcs(sPlant, sOrder) {
-            const aSfcs = await this.#oClient.getSfcs({
+            const aFinished = await this.#oSfcClient.getSfcsByOrderAndStatus({
                 plant: sPlant,
-                // Deliberately left unrestricted: the order's finished SFCs may sit at
-                // different work centers/operations, so we scope only by order below.
-                workCenter: "",
-                filter: { order: sOrder }
+                order: sOrder,
+                statusCode: SFCStatusCode.COMPLETED
             });
 
-            return (aSfcs ?? []).filter((oSfc) => oSfc.status?.code === SFCStatusCode.COMPLETED);
+            oLogger.info("[FinishedSfcList] Finished SFCs fetched", { order: sOrder, count: aFinished.length });
+
+            return aFinished;
         }
 
         /**
@@ -203,7 +221,8 @@ sap.ui.define([
                     plant: sPlant,
                     sfcs: aFinished.map((oSfc) => oSfc.sfc),
                     batchParameter: this.getPropertyValue(FinishedSfcList.PropertyId.BatchParameterName),
-                    predecessorParameter: this.getPropertyValue(FinishedSfcList.PropertyId.PredecessorBatchParameterName)
+                    predecessorParameter: this.getPropertyValue(FinishedSfcList.PropertyId.PredecessorBatchParameterName),
+                    group: this.getPropertyValue(FinishedSfcList.PropertyId.DataCollectionGroup)
                 });
             } catch (oError) {
                 oLogger.error("[FinishedSfcList] Failed to load batch info", { message: oError.message });
@@ -269,6 +288,12 @@ sap.ui.define([
                     description: this.getI18nText("FinishedSfcList.prop.predecessorBatchParameterNameDesc"),
                     category: PropertyCategory.Data,
                     propertyEditor: new StringPropertyEditor(this, FinishedSfcList.PropertyId.PredecessorBatchParameterName)
+                }),
+                new WidgetProperty({
+                    displayName: this.getI18nText("FinishedSfcList.prop.dataCollectionGroup"),
+                    description: this.getI18nText("FinishedSfcList.prop.dataCollectionGroupDesc"),
+                    category: PropertyCategory.Data,
+                    propertyEditor: new StringPropertyEditor(this, FinishedSfcList.PropertyId.DataCollectionGroup)
                 })
             ];
         }

@@ -1,41 +1,47 @@
 sap.ui.define([
-    "sap/dm/dme/pod2/api/mdo/MDO",
-    "sap/dm/dme/pod2/api/mdo/MdoApiClient",
-    "sap/dm/dme/pod2/api/odata/ODataV4Client",
+    "sap/dm/dme/pod2/api/RestClient",
+    "sap/dm/dme/pod2/Logger",
     "dmsi/pod2/util/ValidationErrorHandler"
 ], (
-    MDO,
-    MdoApiClient,
-    ODataV4Client,
+    RestClient,
+    Logger,
     ValidationErrorHandler
 ) => {
     "use strict";
 
-    // FIELD_PARAMETER_NAME/FIELD_PARAMETER_VALUE match the "Parameter Name"/"Parameter Value"
-    // columns confirmed on a live tenant's SFC > Data Collections tab. FIELD_COLLECTED_AT
-    // matches that tab's "Collected At" column. FIELD_PLANT/FIELD_SFC still follow the
-    // standard MDO naming convention (inferred from other MDOs like SFC_STEP_STATUS) and are
-    // NOT yet confirmed against $metadata for /DATA_COLLECTION — adjust here if a query fails.
-    const FIELD_PLANT = "PLANT";
-    const FIELD_SFC = "SFC";
-    const FIELD_PARAMETER_NAME = "PARAMETER_NAME";
-    const FIELD_PARAMETER_VALUE = "PARAMETER_VALUE";
-    const FIELD_COLLECTED_AT = "COLLECTED_AT";
+    const oLogger = Logger.getLogger("dmsi.pod2.client.DataCollectionBatchClient");
 
-    const MAX_SFCS_PER_QUERY = 50;
+    // Confirmed against the public Data Collection API's OpenAPI spec: GET /measurements
+    // (base URL https://api.{regionHost}/datacollection/v1/measurements). Accepts a bulk
+    // "sfcs" array plus optional "dcGroup.name"/"parameterName" filters and returns one row
+    // per SFC+parameter (ParametricData: { plant, sfc, parameter: { measureName, actual, ... } }).
+    // There's no typed POD 2.0 SDK wrapper for this endpoint (DataCollectionPublicApiClient
+    // only exposes group/parameter *definitions*, not collected *values*), so it's called
+    // directly via RestClient — the same sanctioned mechanism used by the sample
+    // ExternalDataFetchAction for first-party REST calls.
+    //
+    // parameterName only accepts a single value per call, so batch and predecessor batch are
+    // fetched as two separate, narrowly-filtered calls rather than one broad query — this
+    // also keeps each page small, since pageSize is capped server-side at 50.
+    //
+    // ASSUMPTION: the relative path below mirrors the OpenAPI spec's base URL segment
+    // (.../datacollection/v1/measurements). Not yet confirmed that RestClient resolves it
+    // this way on this tenant — check this first if a call 404s.
+    const MEASUREMENTS_PATH = "/datacollection/v1/measurements";
+    const PAGE_SIZE = 50;
+    const MAX_PAGES = 20; // safety cap: 20 * 50 = 1000 records per parameter
 
-    class DataCollectionBatchClient extends MdoApiClient {
-
-        #oMdoClient = ODataV4Client.getMdoClient();
+    class DataCollectionBatchClient {
 
         /**
          * Retrieves the most recently collected batch number and predecessor batch number
-         * for a list of SFCs, read from the Data Collection MDO.
+         * for a list of SFCs.
          * @param {Object} oRequest
          * @param {string} oRequest.plant
          * @param {Array<string>} oRequest.sfcs
          * @param {string} oRequest.batchParameter - Data collection parameter name holding the batch number.
          * @param {string} oRequest.predecessorParameter - Data collection parameter name holding the predecessor batch number.
+         * @param {string} [oRequest.group] - Data collection group to scope the query to (e.g. BATCH_CHARS). Optional.
          * @returns {Promise<Object<string, {batchNumber: string, predecessorBatchNumber: string}>>} Keyed by SFC.
          * @throws {Error} If validation fails.
          */
@@ -43,63 +49,85 @@ sap.ui.define([
             ValidationErrorHandler.validateObject(oRequest, "request object");
 
             const sPlant = ValidationErrorHandler.validateFilterValue(oRequest.plant, "Plant");
-            const aSfcs = (oRequest.sfcs ?? []).filter(Boolean).slice(0, MAX_SFCS_PER_QUERY);
+            const aSfcs = (oRequest.sfcs ?? []).filter(Boolean);
             const sBatchParam = oRequest.batchParameter?.trim();
             const sPredecessorParam = oRequest.predecessorParameter?.trim();
+            const sGroup = oRequest.group?.trim();
 
             if (!aSfcs.length || (!sBatchParam && !sPredecessorParam)) {
                 return {};
             }
 
-            const aSanitizedSfcs = aSfcs.map((sSfc) => ValidationErrorHandler.validateFilterValue(sSfc, "SFC"));
-            const aParameterNames = [sBatchParam, sPredecessorParam].filter(Boolean);
+            const mResult = {};
 
-            const sPlantFilter = `${FIELD_PLANT} eq '${sPlant}'`;
-            const sSfcFilter = `${FIELD_SFC} in (${aSanitizedSfcs.map((s) => `'${s}'`).join(",")})`;
-            const sParameterFilter = `${FIELD_PARAMETER_NAME} in (${aParameterNames
-                .map((s) => `'${ValidationErrorHandler.validateFilterValue(s, "Parameter name")}'`)
-                .join(",")})`;
+            if (sBatchParam) {
+                await this.#fetchParameterInto(mResult, sPlant, aSfcs, sGroup, sBatchParam, "batchNumber");
+            }
+            if (sPredecessorParam) {
+                await this.#fetchParameterInto(mResult, sPlant, aSfcs, sGroup, sPredecessorParam, "predecessorBatchNumber");
+            }
 
-            const [aRecords] = await this.#oMdoClient.getPage(MDO.DataCollection, {
-                $top: aSanitizedSfcs.length * aParameterNames.length * 5,
-                $skip: 0,
-                $select: "*",
-                $orderby: `${FIELD_COLLECTED_AT} desc`,
-                $filter: `${sPlantFilter} and ${sSfcFilter} and ${sParameterFilter}`
-            });
-
-            return this.#groupLatestBySfc(aRecords ?? [], sBatchParam, sPredecessorParam);
+            return mResult;
         }
 
         /**
-         * Reduces raw Data Collection records (newest first) into a per-SFC map, keeping only
-         * the first (i.e. latest) value found per SFC/parameter combination.
+         * Fetches all pages of a single parameter's collected values across the given SFCs,
+         * and writes the latest value per SFC into mResult under sField.
          * @private
+         * @async
          */
-        #groupLatestBySfc(aRecords, sBatchParam, sPredecessorParam) {
-            const mResult = {};
+        async #fetchParameterInto(mResult, sPlant, aSfcs, sGroup, sParameterName, sField) {
+            const aRecords = await this.#fetchAllPages(sPlant, aSfcs, sGroup, sParameterName);
 
             for (const oRecord of aRecords) {
-                const sSfc = oRecord[FIELD_SFC];
-                const sParamName = oRecord[FIELD_PARAMETER_NAME];
-
-                if (!sSfc || !sParamName) {
+                const sSfc = oRecord.sfc;
+                if (!sSfc) {
                     continue;
                 }
                 if (!mResult[sSfc]) {
                     mResult[sSfc] = { batchNumber: "", predecessorBatchNumber: "" };
                 }
+                if (!mResult[sSfc][sField]) {
+                    mResult[sSfc][sField] = oRecord.parameter?.actual ?? "";
+                }
+            }
+        }
 
-                const sValue = oRecord[FIELD_PARAMETER_VALUE] ?? "";
+        /**
+         * @private
+         * @async
+         */
+        async #fetchAllPages(sPlant, aSfcs, sGroup, sParameterName) {
+            const aAllRecords = [];
 
-                if (sParamName === sBatchParam && !mResult[sSfc].batchNumber) {
-                    mResult[sSfc].batchNumber = sValue;
-                } else if (sParamName === sPredecessorParam && !mResult[sSfc].predecessorBatchNumber) {
-                    mResult[sSfc].predecessorBatchNumber = sValue;
+            for (let iPage = 0; iPage < MAX_PAGES; iPage++) {
+                const oQuery = {
+                    plant: sPlant,
+                    sfcs: aSfcs,
+                    parameterName: sParameterName,
+                    pageNumber: iPage,
+                    pageSize: PAGE_SIZE
+                };
+                if (sGroup) {
+                    oQuery["dcGroup.name"] = sGroup;
+                }
+
+                const oResponse = await RestClient.get(MEASUREMENTS_PATH, oQuery);
+                const aPageRecords = oResponse?.data ?? [];
+                aAllRecords.push(...aPageRecords);
+
+                const iNumberOfPages = oResponse?.numberOfPages ?? 1;
+                if (aPageRecords.length < PAGE_SIZE || iPage + 1 >= iNumberOfPages) {
+                    break;
                 }
             }
 
-            return mResult;
+            oLogger.info("[DataCollectionBatchClient] Fetched measurements", {
+                parameterName: sParameterName,
+                recordCount: aAllRecords.length
+            });
+
+            return aAllRecords;
         }
     }
 
