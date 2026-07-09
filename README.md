@@ -47,15 +47,25 @@ Number, plus a **Total** row at the end summing the quantity column.
   *definitions*, not collected *values*), so it's called directly — the same pattern the
   sample `ExternalDataFetchAction` uses for first-party REST calls.
 
-  **Confirmed via side-by-side Postman tests against the tenant** (not guessed): the correct
-  and sufficient request is `plant` + `sfcs` + `dcGroup.name` + `dcGroup.version` (+ optionally
-  `parameterName`). `operation.name`/`operation.version`/`resource` are **not** sent — both
-  successful test calls omitted them entirely, so they were dropped from the client to keep
-  it simple and avoid depending on `PodContext` paths that don't reliably resolve in every pod
-  type.
-  - `dcGroup.name`/`dcGroup.version` come from the **Data Collection Group**/**Data Collection
-    Group Version** properties below, and are only sent as a pair — if either is blank, both
-    are omitted, since sending `dcGroup.name` without `dcGroup.version` was confirmed to 404.
+  **The correct request — confirmed by actually running the widget against the tenant — is
+  `plant` + `sfcs` + `parameterName`, sent to the *fully-qualified* gateway URL.** Two things
+  make this work, and both were previously wrong:
+  1. **The URL must include the POD 2.0 API gateway prefix.** The endpoint is called at
+     `<gatewayBase>/datacollection/v1/measurements`, where `<gatewayBase>` is
+     `.../sapdmdmepod2/~{hash}~/fnd/api-gateway-ms/` — the same `~{hash}~` segment the POD page
+     itself is served under. `FinishedSfcList._resolveApiBaseUrl()` derives this from
+     `window.location` (with a POD-Designer **API Base URL** override and runtime/same-origin
+     fallbacks), then passes it into the client. Passing a bare **origin-relative**
+     `/datacollection/v1/measurements` (as an earlier version did) resolves against the page
+     origin, misses the gateway prefix, and **404s for every SFC** — this was the actual root
+     cause of the empty batch columns.
+  2. **`dcGroup.name`/`dcGroup.version` are deliberately NOT sent.** Once the URL is correct,
+     adding them makes the request **404 on this tenant even for SFCs that do have a value** —
+     silently blanking the whole column (a 404 is treated as "no value logged"). An earlier
+     Postman "confirmation" that they were *required* was misleading: Postman's base URL already
+     contained the gateway prefix, so those calls succeeded for a different reason — the real
+     variable was the URL base, not the dcGroup filter. `operation.name`/`.version`/`resource`
+     are likewise not sent.
   - `parameterName` is set per call to the batch or predecessor batch parameter — two calls
     are made per SFC (one per parameter, since `parameterName` only accepts a single value).
   - `sfcs` is sent as a plain string (one SFC per call), not an array — `RestClient.get()`
@@ -69,22 +79,29 @@ Number, plus a **Total** row at the end summing the quantity column.
 |---|---|---|
 | **Batch Parameter Name** | Data Collection parameter name holding the batch number | `BATCH` |
 | **Predecessor Batch Parameter Name** | Data Collection parameter name holding the predecessor batch number | `IP_PREDECESSOR_BATCH` |
-| **Data Collection Group** | Data Collection group the two parameters above belong to | `BATCH_CHARS` |
-| **Data Collection Group Version** | Version of the Data Collection Group above | `A` |
+| **API Base URL (optional)** | Manual override for the API gateway base URL used for Data Collection calls. Leave blank to auto-detect from the POD URL. | *(blank — auto-detect)* |
 
-These are configurable (rather than hardcoded) because the actual parameter names depend on
-how each plant's Data Collection groups are set up — this is also what makes the widget
-reusable across different PODs without code changes, per the spec. The defaults above were
-confirmed against a live tenant's SFC → **Data Collections** tab (group `BATCH_CHARS`,
-version `A`); if a plant uses different parameter names, override them per widget instance in
-the POD Designer.
+The two parameter names are configurable (rather than hardcoded) because the actual names
+depend on how each plant's Data Collection groups are set up — this is also what makes the
+widget reusable across different PODs without code changes, per the spec. The defaults above
+were confirmed against a live tenant's SFC → **Data Collections** tab; if a plant uses
+different parameter names, override them per widget instance in the POD Designer. **API Base
+URL** should normally be left blank — the widget auto-detects the gateway base from the POD
+page URL; only set it if auto-detection fails (see the fallback warning in the console).
+
+> **Note:** the widget no longer takes **Data Collection Group** / **Group Version**
+> properties. Sending `dcGroup.name`/`dcGroup.version` was found to 404 the `/measurements`
+> call on this tenant; the query is now just `plant` + `sfcs` + `parameterName`. If you have an
+> old instance that still shows those two properties, it predates this change (see below).
 
 **⚠️ Important — POD Designer property values are per-instance, not code defaults:** an
-already-placed widget instance keeps whatever property values were saved when it was first
-configured. If it was added to the POD *before* these defaults were corrected, it will still
-be querying under old/blank values until someone manually retypes the four values above into
-the instance's Properties panel in POD Designer. This is one of the most likely reasons the
-batch columns come back empty even when everything else works.
+already-placed widget instance keeps whatever property set and values were saved when it was
+first configured, and POD Designer does **not** re-scan `getProperties()` for an existing
+instance just because a newer extension build is uploaded. So after any property change
+(rename/add/remove — e.g. this build dropping the two Group properties and adding **API Base
+URL**), **delete the existing "Finished SFC List" widget and drag a fresh one from the
+palette** rather than reusing the old instance. This was confirmed to be the reason a newly
+added property didn't appear on an existing instance.
 
 **⚠️ Logging note:** this tenant's effective `sap/dm/dme/pod2/Logger` level filters out
 `INFO`-level messages — `oLogger.info(...)` calls never reach the console at all here (calling
@@ -95,26 +112,27 @@ first fetch, even runs). All diagnostic logging in this project (`FinishedSfcLis
 instead of `.info()`, which is confirmed visible. Keep new diagnostic logs on `.warn()` (or
 `.error()`) for the same reason — don't add `.info()` calls expecting them to show up here.
 
-**⚠️ Still unverified — check if the batch columns come back empty:** in
-`client/DataCollectionBatchClient.js`, `MEASUREMENTS_PATH` (`/datacollection/v1/measurements`)
-mirrors the OpenAPI spec's declared base URL segment, but it hasn't been confirmed that
-`RestClient` resolves relative paths against that exact base on this tenant — check this
-first if the call itself 404s. Every call logs its raw response
-(`[DataCollectionBatchClient] Raw response`) so the actual response shape and content can be
-inspected directly in the console rather than assumed — check this log first if values still
-don't appear. A failure here is isolated (see below) and only blanks the batch columns, not
-the whole list. If a warning logs that Group is set but Group Version is blank (or vice
-versa), that's the **Data Collection Group Version** property not being set on this widget
-instance in POD Designer — the two must be set together.
+**✅ Resolved (was "still unverified") — the empty batch columns:** the root cause was the
+request URL, exactly where this note used to say to look first. `DataCollectionBatchClient`
+previously passed an **origin-relative** `/datacollection/v1/measurements` to `RestClient`,
+which resolved it against the bare page origin and missed the POD 2.0 API gateway prefix —
+so every call 404'd and every batch cell came back blank. The client now takes an
+`apiBaseUrl` (the resolved gateway base, `.../sapdmdmepod2/~{hash}~/fnd/api-gateway-ms/`) from
+the widget's `_resolveApiBaseUrl()` and builds the full URL from it (service path
+`datacollection/v1/measurements`, **no** leading slash, appended to the base). The
+`[DataCollectionBatchClient] Fetching batch info` log now includes the resolved `url` so it
+can be verified in the console. A failure here is still isolated (see below) and only blanks
+the batch columns, not the whole list.
 
-**Note — a 404 for one SFC/parameter combination is not necessarily a bug:** confirmed by
-direct comparison against a working request for the same plant/SFC/group with a different
-`parameterName`, this API returns **404** (not 200 with an empty array) when a specific SFC
-has no value logged for the requested parameter — e.g. predecessor batch may only be recorded
-on certain SFCs, not universally. `#fetchParameterInto()` now logs that case at `info` level
+**Note — a 404 for one SFC/parameter combination is not necessarily a bug:** once the URL is
+correct, this API returns **404** (not 200 with an empty array) when a specific SFC has no
+value logged for the requested parameter — e.g. predecessor batch may only be recorded on
+certain SFCs, not universally. `#fetchParameterInto()` logs that case at `warn` level
 (`[DataCollectionBatchClient] No value logged for this SFC/parameter`) instead of `error`, so
 the console isn't full of red errors for a normal "nothing collected here" outcome. Genuine
-failures (wrong path, 500, network errors, etc.) still log as errors.
+failures (wrong path, 500, network errors, etc.) still log as errors. **Do not** try to
+"fix" these 404s by re-adding `dcGroup.*`/`operation.*` filters — on this tenant those make
+even SFCs that *do* have a value 404, silently blanking the whole column.
 
 **Fixed (root cause):** the widget originally fetched SFCs via `SfcPublicApiClient.getSfcs()`,
 which wraps the SFC Work List REST API. That API's `sfcStatuses` filter only supports
@@ -129,14 +147,26 @@ Order API's OpenAPI spec confirmed `getOrder().sfcs` returns all SFCs regardless
 switched to `client/OrderSfcClient.js` instead — no field names guessed, every field used
 (`sfcs`, `quantity`, `status.code`, `defaultBatchId`) is documented in the public API specs.
 
-**Also fixed — batch/predecessor batch lookup history:** `client/DataCollectionBatchClient.js`
-went through several incorrect iterations (guessed MDO field names → `/measurements` with
-only `plant` → briefly the deprecated `/parameters` endpoint with `operation`/`resource`
-believed required) before a direct 404 in the console, followed by side-by-side Postman
-tests against the tenant, confirmed the actual minimal correct request described above.
-Response parsing stays tolerant of multiple possible shapes (bare array vs `.data`-wrapped,
-singular `parameter` vs plural `parameters`) as a safety net, though the confirmed
-`/measurements` response now matches the `.data`-wrapped/singular-`parameter` shape exactly.
+**Also fixed — batch/predecessor batch lookup history (the long one):**
+`client/DataCollectionBatchClient.js` went through several incorrect iterations (guessed MDO
+field names → `/measurements` with only `plant` → briefly the deprecated `/parameters`
+endpoint with `operation`/`resource` believed required → `/measurements` with
+`dcGroup.name`+`dcGroup.version` believed required). **All of these shared one hidden cause:
+the request URL was origin-relative and missed the API gateway prefix, so it 404'd no matter
+what query params were sent** — which repeatedly sent the debugging down the wrong path
+(blaming the dcGroup pairing, the parameter names, POD Designer property caching, etc.). The
+actual fix, confirmed by running the widget against the tenant: build the full URL from the
+resolved gateway base (`_resolveApiBaseUrl()` → `apiBaseUrl`) and send only `plant` + `sfcs`
++ `parameterName`. Adding `dcGroup.*` back on top of the *correct* URL 404s valid SFCs, so
+those params were removed entirely (and the corresponding widget properties dropped). Response
+parsing stays tolerant of multiple possible shapes (bare array vs `.data`-wrapped, singular
+`parameter` vs plural `parameters`) as a safety net, though the confirmed `/measurements`
+response matches the `.data`-wrapped/singular-`parameter` shape exactly.
+
+_Lesson for future debugging: when **every** call to an endpoint 404s regardless of query
+params, suspect the URL/base resolution before the params. The README flagged this exact
+risk ("not yet confirmed that `RestClient` resolves relative paths against that base") but it
+was deprioritized in favour of the params._
 
 **Also fixed:** an earlier version shared one `try/catch` across both the SFC-list fetch and
 the batch-info fetch, so a failure in the batch lookup (e.g. wrong parameter/field name)

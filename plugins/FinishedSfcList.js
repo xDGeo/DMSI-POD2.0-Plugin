@@ -37,8 +37,6 @@ sap.ui.define([
     // Confirmed against a live tenant's SFC > Data Collections tab.
     const DEFAULT_BATCH_PARAMETER = "BATCH";
     const DEFAULT_PREDECESSOR_PARAMETER = "IP_PREDECESSOR_BATCH";
-    const DEFAULT_DATA_COLLECTION_GROUP = "BATCH_CHARS";
-    const DEFAULT_DATA_COLLECTION_GROUP_VERSION = "A";
 
     /**
      * Lists all finished (COMPLETED) SFCs of the order behind the currently selected
@@ -65,8 +63,7 @@ sap.ui.define([
         static PropertyId = Object.freeze({
             BatchParameterName: "batchParameterName",
             PredecessorBatchParameterName: "predecessorBatchParameterName",
-            DataCollectionGroup: "dataCollectionGroup",
-            DataCollectionGroupVersion: "dataCollectionGroupVersion"
+            ApiBaseUrl: "apiBaseUrl"
         });
 
         static Field = Object.freeze({
@@ -100,8 +97,7 @@ sap.ui.define([
                     ...oConfig.properties,
                     [FinishedSfcList.PropertyId.BatchParameterName]: DEFAULT_BATCH_PARAMETER,
                     [FinishedSfcList.PropertyId.PredecessorBatchParameterName]: DEFAULT_PREDECESSOR_PARAMETER,
-                    [FinishedSfcList.PropertyId.DataCollectionGroup]: DEFAULT_DATA_COLLECTION_GROUP,
-                    [FinishedSfcList.PropertyId.DataCollectionGroupVersion]: DEFAULT_DATA_COLLECTION_GROUP_VERSION
+                    [FinishedSfcList.PropertyId.ApiBaseUrl]: ""
                 }
             };
         }
@@ -222,22 +218,74 @@ sap.ui.define([
          */
         async _fetchBatchInfo(sPlant, aFinished) {
             try {
-                // Confirmed via side-by-side Postman tests: plant + sfcs + dcGroup.name +
-                // dcGroup.version is sufficient. operation.name/.version/resource are not
-                // needed and are deliberately not sent.
+                // Confirmed by running against the tenant: plant + sfcs + parameterName is
+                // sufficient. dcGroup.* and operation.* are deliberately NOT sent — see
+                // DataCollectionBatchClient. The apiBaseUrl (resolved gateway base) is what
+                // makes the URL correct; without it the call resolves against the bare page
+                // origin and 404s for every SFC.
                 return await this.#oBatchClient.getBatchInfo({
+                    apiBaseUrl: this._resolveApiBaseUrl(),
                     plant: sPlant,
                     sfcs: aFinished.map((oSfc) => oSfc.sfc),
                     batchParameter: this.getPropertyValue(FinishedSfcList.PropertyId.BatchParameterName),
-                    predecessorParameter: this.getPropertyValue(FinishedSfcList.PropertyId.PredecessorBatchParameterName),
-                    group: this.getPropertyValue(FinishedSfcList.PropertyId.DataCollectionGroup),
-                    groupVersion: this.getPropertyValue(FinishedSfcList.PropertyId.DataCollectionGroupVersion)
+                    predecessorParameter: this.getPropertyValue(FinishedSfcList.PropertyId.PredecessorBatchParameterName)
                 });
             } catch (oError) {
                 oLogger.error("[FinishedSfcList] Failed to load batch info", { message: oError.message });
                 MessageToast.show(this.getI18nText("FinishedSfcList.batchLoadFailed") || "Failed to load batch data");
                 return {};
             }
+        }
+
+        /**
+         * Resolves the SAP DM API gateway base URL that Data Collection calls must be prefixed
+         * with (mirrors the sample AttendanceImport plugin), in priority order:
+         *   1. POD Designer "apiBaseUrl" property — manual override.
+         *   2. window.location path — POD 2.0 serves all API calls under the same ~{hash}~
+         *      segment as the page itself: .../sapdmdmepod2/~{hash}~/fnd/api-gateway-ms/
+         *   3. getPodRuntime().getPublicApiRestDataSourceUri() if available (POD 1.0 legacy).
+         *   4. Same-origin /api/ fallback.
+         * @private
+         */
+        _resolveApiBaseUrl() {
+            // 1. Manual override configured in POD Designer.
+            const sManual = this.getPropertyValue(FinishedSfcList.PropertyId.ApiBaseUrl)?.trim();
+            if (sManual) {
+                oLogger.warn("[FinishedSfcList] Using configured API base URL", { url: sManual });
+                return sManual;
+            }
+
+            // 2. Derive from window.location — the ~hash~ segment POD 2.0 uses for same-origin
+            //    API gateway proxying, e.g. /sapdmdmepod2/~e0114c14-.../fnd/api-gateway-ms/
+            try {
+                const oMatch = window.location.pathname.match(/^(.*\/~[^~]+~\/)/);
+                if (oMatch) {
+                    const sResolved = `${window.location.origin}${oMatch[1]}fnd/api-gateway-ms/`;
+                    oLogger.warn("[FinishedSfcList] Resolved API base URL from window.location", { url: sResolved });
+                    return sResolved;
+                }
+            } catch (oError) {
+                oLogger.warn("[FinishedSfcList] Failed to derive API base URL from window.location", { message: oError.message });
+            }
+
+            // 3. POD runtime may expose the URL (POD 1.0, may carry over to 2.0).
+            try {
+                const oRuntime = this.getPodRuntime?.();
+                if (typeof oRuntime?.getPublicApiRestDataSourceUri === "function") {
+                    const sUrl = oRuntime.getPublicApiRestDataSourceUri();
+                    if (sUrl) {
+                        oLogger.warn("[FinishedSfcList] Resolved API base URL from POD runtime", { url: sUrl });
+                        return sUrl;
+                    }
+                }
+            } catch (oError) {
+                oLogger.warn("[FinishedSfcList] Failed to resolve API base URL from POD runtime", { message: oError.message });
+            }
+
+            // 4. Last resort — same-origin /api/ path.
+            const sFallback = `${window.location.origin}/api/`;
+            oLogger.warn("[FinishedSfcList] API base URL auto-detection failed — using fallback", { url: sFallback });
+            return sFallback;
         }
 
         /**
@@ -299,16 +347,10 @@ sap.ui.define([
                     propertyEditor: new StringPropertyEditor(this, FinishedSfcList.PropertyId.PredecessorBatchParameterName)
                 }),
                 new WidgetProperty({
-                    displayName: this.getI18nText("FinishedSfcList.prop.dataCollectionGroup"),
-                    description: this.getI18nText("FinishedSfcList.prop.dataCollectionGroupDesc"),
+                    displayName: this.getI18nText("FinishedSfcList.prop.apiBaseUrl"),
+                    description: this.getI18nText("FinishedSfcList.prop.apiBaseUrlDesc"),
                     category: PropertyCategory.Data,
-                    propertyEditor: new StringPropertyEditor(this, FinishedSfcList.PropertyId.DataCollectionGroup)
-                }),
-                new WidgetProperty({
-                    displayName: this.getI18nText("FinishedSfcList.prop.dataCollectionGroupVersion"),
-                    description: this.getI18nText("FinishedSfcList.prop.dataCollectionGroupVersionDesc"),
-                    category: PropertyCategory.Data,
-                    propertyEditor: new StringPropertyEditor(this, FinishedSfcList.PropertyId.DataCollectionGroupVersion)
+                    propertyEditor: new StringPropertyEditor(this, FinishedSfcList.PropertyId.ApiBaseUrl)
                 })
             ];
         }
