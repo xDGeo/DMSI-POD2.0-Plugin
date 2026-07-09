@@ -12,20 +12,21 @@ sap.ui.define([
     const oLogger = Logger.getLogger("dmsi.pod2.client.DataCollectionBatchClient");
 
     // Uses the Data Collection API's GET /measurements endpoint (getLoggedMeasuresUsingGET) —
-    // NOT the deprecated GET /parameters endpoint (getLoggedSfcDataUsingGET). A working test
-    // directly against the tenant confirmed operation.name, operation.version, resource, and
-    // sfcs are required in practice (the /measurements OpenAPI spec lists them as optional,
-    // but the real backend behaves like /parameters here) and that dcGroup is NOT needed —
-    // parameterName alone is sufficient to isolate the batch/predecessor batch values. There's
-    // no typed POD 2.0 SDK wrapper for this endpoint (DataCollectionPublicApiClient only
-    // exposes group/parameter *definitions*, not collected *values*), so it's called directly
-    // via RestClient — the same sanctioned mechanism used by the sample ExternalDataFetchAction
-    // for first-party REST calls.
+    // NOT the deprecated GET /parameters endpoint (getLoggedSfcDataUsingGET). Per the API's
+    // own documentation, only "plant" is required; dcGroup.name/.version, operation.name/
+    // .version, resource, and parameterName are all optional refinements — but every one of
+    // them is passed through here when available, matching the full documented parameter set
+    // exactly rather than guessing which subset is needed. There's no typed POD 2.0 SDK
+    // wrapper for this endpoint (DataCollectionPublicApiClient only exposes group/parameter
+    // *definitions*, not collected *values*), so it's called directly via RestClient — the
+    // same sanctioned mechanism used by the sample ExternalDataFetchAction for first-party
+    // REST calls.
     //
     // Two calls per SFC (one per parameter — parameterName only accepts a single value), with
-    // plant/operation/resource all resolved from PodContext, not configured. Calling per-SFC
-    // (rather than passing all SFCs in one bulk "sfcs" array) avoids relying on how RestClient
-    // serializes a multi-value query parameter, which isn't confirmed.
+    // plant/operation/resource resolved from PodContext and group/version configured in the
+    // POD Designer. Calling per-SFC (rather than passing all SFCs in one bulk "sfcs" array)
+    // avoids relying on how RestClient serializes a multi-value query parameter, which isn't
+    // confirmed.
     //
     // ASSUMPTION: the relative path below mirrors the OpenAPI spec's base URL segment
     // (.../datacollection/v1/measurements). Not yet confirmed that RestClient resolves it this
@@ -39,13 +40,15 @@ sap.ui.define([
          * Retrieves the most recently collected batch number and predecessor batch number
          * for a list of SFCs.
          * @param {Object} oRequest
-         * @param {string} oRequest.plant
+         * @param {string} oRequest.plant - Required by the API.
          * @param {Array<string>} oRequest.sfcs
          * @param {string} oRequest.batchParameter - Data collection parameter name holding the batch number.
          * @param {string} oRequest.predecessorParameter - Data collection parameter name holding the predecessor batch number.
-         * @param {string} oRequest.operationName - The current operation name (required by the API in practice).
-         * @param {string} oRequest.operationVersion - The current operation version (required by the API in practice).
-         * @param {string} oRequest.resource - The current resource (required by the API in practice).
+         * @param {string} [oRequest.operationName] - Current operation name, if known.
+         * @param {string} [oRequest.operationVersion] - Current operation version, if known.
+         * @param {string} [oRequest.resource] - Current resource, if known.
+         * @param {string} [oRequest.group] - Data collection group to scope the query to (e.g. BATCH_CHARS).
+         * @param {string} [oRequest.groupVersion] - Data collection group version (e.g. A).
          * @returns {Promise<Object<string, {batchNumber: string, predecessorBatchNumber: string}>>} Keyed by SFC.
          * @throws {Error} If validation fails.
          */
@@ -59,43 +62,38 @@ sap.ui.define([
             const sOperationName = oRequest.operationName?.trim();
             const sOperationVersion = oRequest.operationVersion?.trim();
             const sResource = oRequest.resource?.trim();
+            const sGroup = oRequest.group?.trim();
+            const sGroupVersion = oRequest.groupVersion?.trim();
 
             if (!aSfcs.length || (!sBatchParam && !sPredecessorParam)) {
-                return {};
-            }
-
-            if (!sOperationName || !sOperationVersion || !sResource) {
-                oLogger.warn("[DataCollectionBatchClient] Missing operation/resource context — " +
-                    "cannot call the Data Collection /measurements API (all three are required)", {
-                    operationName: sOperationName || "(missing)",
-                    operationVersion: sOperationVersion || "(missing)",
-                    resource: sResource || "(missing)"
-                });
                 return {};
             }
 
             oLogger.info("[DataCollectionBatchClient] Fetching batch info", {
                 plant: sPlant,
                 sfcCount: aSfcs.length,
-                operationName: sOperationName,
-                operationVersion: sOperationVersion,
-                resource: sResource,
+                operationName: sOperationName || "(none)",
+                operationVersion: sOperationVersion || "(none)",
+                resource: sResource || "(none)",
+                group: sGroup || "(none)",
+                groupVersion: sGroupVersion || "(none)",
                 batchParameter: sBatchParam,
                 predecessorParameter: sPredecessorParam
             });
 
+            const oContext = { sPlant, sOperationName, sOperationVersion, sResource, sGroup, sGroupVersion };
             const mResult = {};
             aSfcs.forEach((sSfc) => { mResult[sSfc] = { batchNumber: "", predecessorBatchNumber: "" }; });
 
             const aFetches = [];
             if (sBatchParam) {
                 aFetches.push(...aSfcs.map((sSfc) =>
-                    this.#fetchParameterInto(mResult, sSfc, "batchNumber", sPlant, sOperationName, sOperationVersion, sResource, sBatchParam)
+                    this.#fetchParameterInto(mResult, sSfc, "batchNumber", oContext, sBatchParam)
                 ));
             }
             if (sPredecessorParam) {
                 aFetches.push(...aSfcs.map((sSfc) =>
-                    this.#fetchParameterInto(mResult, sSfc, "predecessorBatchNumber", sPlant, sOperationName, sOperationVersion, sResource, sPredecessorParam)
+                    this.#fetchParameterInto(mResult, sSfc, "predecessorBatchNumber", oContext, sPredecessorParam)
                 ));
             }
             await Promise.all(aFetches);
@@ -103,7 +101,8 @@ sap.ui.define([
             const iFoundCount = Object.values(mResult).filter((o) => o.batchNumber || o.predecessorBatchNumber).length;
             if (!iFoundCount) {
                 oLogger.warn("[DataCollectionBatchClient] No batch/predecessor batch values found for any SFC " +
-                    "— verify the parameterName/operation/resource values are correct (case-sensitive).");
+                    "— verify the parameterName/group/version/operation/resource values are correct " +
+                    "(case-sensitive).");
             }
 
             return mResult;
@@ -116,23 +115,27 @@ sap.ui.define([
          * @private
          * @async
          */
-        async #fetchParameterInto(mResult, sSfc, sField, sPlant, sOperationName, sOperationVersion, sResource, sParameterName) {
+        async #fetchParameterInto(mResult, sSfc, sField, oContext, sParameterName) {
             try {
-                const oQuery = {
-                    plant: sPlant,
-                    sfcs: [sSfc],
-                    "operation.name": sOperationName,
-                    "operation.version": sOperationVersion,
-                    resource: sResource,
-                    parameterName: sParameterName
-                };
+                const oQuery = { plant: oContext.sPlant, sfcs: [sSfc], parameterName: sParameterName };
+
+                if (oContext.sOperationName) { oQuery["operation.name"] = oContext.sOperationName; }
+                if (oContext.sOperationVersion) { oQuery["operation.version"] = oContext.sOperationVersion; }
+                if (oContext.sResource) { oQuery.resource = oContext.sResource; }
+                if (oContext.sGroup) { oQuery["dcGroup.name"] = oContext.sGroup; }
+                if (oContext.sGroupVersion) { oQuery["dcGroup.version"] = oContext.sGroupVersion; }
 
                 const oResponse = await RestClient.get(MEASUREMENTS_PATH, oQuery);
-                const aRecords = oResponse?.data ?? [];
-                const oMatch = aRecords.find((oRecord) => oRecord.parameter?.measureName === sParameterName);
 
-                if (oMatch) {
-                    mResult[sSfc][sField] = oMatch.parameter?.actual ?? "";
+                oLogger.info("[DataCollectionBatchClient] Raw response", {
+                    sfc: sSfc,
+                    parameterName: sParameterName,
+                    response: oResponse
+                });
+
+                const sValue = this.#extractValue(oResponse, sParameterName);
+                if (sValue !== null) {
+                    mResult[sSfc][sField] = sValue;
                 }
             } catch (oError) {
                 oLogger.error("[DataCollectionBatchClient] Failed to fetch measurement", {
@@ -141,6 +144,34 @@ sap.ui.define([
                     message: oError.message
                 });
             }
+        }
+
+        /**
+         * Extracts a parameter's collected value from the response, tolerating shape
+         * differences between the documented /measurements schema and what the tenant
+         * actually returns:
+         *  - Response may be the array directly, or wrapped in a "data" property.
+         *  - Each record may carry the matched parameter as a singular "parameter" object
+         *    (documented /measurements shape) or a plural "parameters" array (the shape
+         *    confirmed on this tenant via the deprecated /parameters endpoint).
+         * Returns null if no match was found (as opposed to "" for a genuinely empty value).
+         * @private
+         */
+        #extractValue(oResponse, sParameterName) {
+            const aRecords = Array.isArray(oResponse) ? oResponse : (oResponse?.data ?? []);
+
+            for (const oRecord of aRecords) {
+                if (oRecord.parameter?.measureName === sParameterName) {
+                    return oRecord.parameter.actual ?? "";
+                }
+
+                const oMatch = (oRecord.parameters ?? []).find((oParam) => oParam.measureName === sParameterName);
+                if (oMatch) {
+                    return oMatch.actual ?? "";
+                }
+            }
+
+            return null;
         }
     }
 

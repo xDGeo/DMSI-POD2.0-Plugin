@@ -37,6 +37,8 @@ sap.ui.define([
     // Confirmed against a live tenant's SFC > Data Collections tab.
     const DEFAULT_BATCH_PARAMETER = "BATCH";
     const DEFAULT_PREDECESSOR_PARAMETER = "IP_PREDECESSOR_BATCH";
+    const DEFAULT_DATA_COLLECTION_GROUP = "BATCH_CHARS";
+    const DEFAULT_DATA_COLLECTION_GROUP_VERSION = "A";
 
     /**
      * Lists all finished (COMPLETED) SFCs of the order behind the currently selected
@@ -62,7 +64,9 @@ sap.ui.define([
 
         static PropertyId = Object.freeze({
             BatchParameterName: "batchParameterName",
-            PredecessorBatchParameterName: "predecessorBatchParameterName"
+            PredecessorBatchParameterName: "predecessorBatchParameterName",
+            DataCollectionGroup: "dataCollectionGroup",
+            DataCollectionGroupVersion: "dataCollectionGroupVersion"
         });
 
         static Field = Object.freeze({
@@ -95,7 +99,9 @@ sap.ui.define([
                 properties: {
                     ...oConfig.properties,
                     [FinishedSfcList.PropertyId.BatchParameterName]: DEFAULT_BATCH_PARAMETER,
-                    [FinishedSfcList.PropertyId.PredecessorBatchParameterName]: DEFAULT_PREDECESSOR_PARAMETER
+                    [FinishedSfcList.PropertyId.PredecessorBatchParameterName]: DEFAULT_PREDECESSOR_PARAMETER,
+                    [FinishedSfcList.PropertyId.DataCollectionGroup]: DEFAULT_DATA_COLLECTION_GROUP,
+                    [FinishedSfcList.PropertyId.DataCollectionGroupVersion]: DEFAULT_DATA_COLLECTION_GROUP_VERSION
                 }
             };
         }
@@ -214,10 +220,10 @@ sap.ui.define([
          */
         async _fetchBatchInfo(sPlant, aFinished) {
             try {
-                // The Data Collection /measurements API requires the current operation and
-                // resource in practice. "Current" here means the operation activity and
-                // resource this POD is presently working within — resolved from PodContext,
-                // not configured.
+                // The Data Collection /measurements API accepts operation.name/.version and
+                // resource as optional refinements. "Current" here means the operation
+                // activity and resource this POD is presently working within — resolved from
+                // PodContext, not configured.
                 const oOperationActivity = PodContext.getFilterOperationActivities()?.[0];
                 const sResource = PodContext.getFilterResources()?.[0]?.resource;
 
@@ -226,6 +232,8 @@ sap.ui.define([
                     sfcs: aFinished.map((oSfc) => oSfc.sfc),
                     batchParameter: this.getPropertyValue(FinishedSfcList.PropertyId.BatchParameterName),
                     predecessorParameter: this.getPropertyValue(FinishedSfcList.PropertyId.PredecessorBatchParameterName),
+                    group: this.getPropertyValue(FinishedSfcList.PropertyId.DataCollectionGroup),
+                    groupVersion: this.getPropertyValue(FinishedSfcList.PropertyId.DataCollectionGroupVersion),
                     operationName: oOperationActivity?.operationActivity,
                     operationVersion: oOperationActivity?.operationActivityVersion,
                     resource: sResource
@@ -294,6 +302,18 @@ sap.ui.define([
                     description: this.getI18nText("FinishedSfcList.prop.predecessorBatchParameterNameDesc"),
                     category: PropertyCategory.Data,
                     propertyEditor: new StringPropertyEditor(this, FinishedSfcList.PropertyId.PredecessorBatchParameterName)
+                }),
+                new WidgetProperty({
+                    displayName: this.getI18nText("FinishedSfcList.prop.dataCollectionGroup"),
+                    description: this.getI18nText("FinishedSfcList.prop.dataCollectionGroupDesc"),
+                    category: PropertyCategory.Data,
+                    propertyEditor: new StringPropertyEditor(this, FinishedSfcList.PropertyId.DataCollectionGroup)
+                }),
+                new WidgetProperty({
+                    displayName: this.getI18nText("FinishedSfcList.prop.dataCollectionGroupVersion"),
+                    description: this.getI18nText("FinishedSfcList.prop.dataCollectionGroupVersionDesc"),
+                    category: PropertyCategory.Data,
+                    propertyEditor: new StringPropertyEditor(this, FinishedSfcList.PropertyId.DataCollectionGroupVersion)
                 })
             ];
         }
