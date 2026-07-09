@@ -33,22 +33,36 @@ Number, plus a **Total** row at the end summing the quantity column.
 
 | Property | Description | Default |
 |---|---|---|
-| **Batch Parameter Name** | Data Collection parameter name holding the batch number | `BATCH_NUMBER` |
-| **Predecessor Batch Parameter Name** | Data Collection parameter name holding the predecessor batch number | `PREDECESSOR_BATCH_NUMBER` |
+| **Batch Parameter Name** | Data Collection parameter name holding the batch number | `BATCH` |
+| **Predecessor Batch Parameter Name** | Data Collection parameter name holding the predecessor batch number | `IP_PREDECESSOR_BATCH` |
 
 These are configurable (rather than hardcoded) because the actual parameter names depend on
 how each plant's Data Collection groups are set up — this is also what makes the widget
-reusable across different PODs without code changes, per the spec.
+reusable across different PODs without code changes, per the spec. The defaults above were
+confirmed against a live tenant's SFC → **Data Collections** tab (group `BATCH_CHARS`); if a
+plant uses different parameter names, override them per widget instance in the POD Designer.
 
-**⚠️ Verify before go-live:** the `DATA_COLLECTION` MDO's OData field names in
-`client/DataCollectionBatchClient.js` (`PLANT`, `SFC`, `PARAMETER_NAME`, `PARAMETER_VALUE`,
-`CREATED_AT`) are an informed assumption based on the naming convention of other MDOs (e.g.
-`SFC_STEP_STATUS`), since this was built without access to a live tenant's `$metadata`. Check
-the real field names for `/DATA_COLLECTION` on your tenant and adjust the `FIELD_*` constants
-at the top of that file if they differ. Likewise, the widget currently queries the SFC list
-without restricting to a work center (`workCenter: ""`) so that all of an order's finished
-SFCs are returned regardless of which operation/work center they're currently at — confirm
-this is the desired behavior against the live API.
+**⚠️ Still unverified — check if the batch columns come back empty:** in
+`client/DataCollectionBatchClient.js`, `FIELD_PARAMETER_NAME` (`PARAMETER_NAME`),
+`FIELD_PARAMETER_VALUE` (`PARAMETER_VALUE`), and `FIELD_COLLECTED_AT` (`COLLECTED_AT`) are
+confirmed — they match the "Parameter Name" / "Parameter Value" / "Collected At" column
+headers on that same Data Collections tab. `FIELD_PLANT` (`PLANT`) and `FIELD_SFC` (`SFC`)
+are still an informed guess (naming convention inferred from other MDOs like
+`SFC_STEP_STATUS`) since those aren't visible as UI columns — check the tenant's `$metadata`
+for `/DATA_COLLECTION` if the batch lookup itself throws. A failure there is isolated (see
+below) and only blanks the batch columns, not the whole list.
+
+Also note: the widget currently queries the SFC list without restricting to a work center
+(`workCenter: ""`) so that all of an order's finished SFCs are returned regardless of which
+operation/work center they're currently at — confirm this is the desired behavior against the
+live API.
+
+**Fixed:** an earlier version shared one `try/catch` across both the SFC-list fetch and the
+batch-info fetch, so a failure in the batch lookup (e.g. wrong parameter/field name) silently
+wiped the *entire* row list ("No data" for every column, not just batch). `_fetchData()` now
+calls `_fetchFinishedSfcs()` and `_fetchBatchInfo()` separately — a batch-info failure logs
+via `Logger`, shows a toast (`FinishedSfcList.batchLoadFailed`), and falls back to an empty
+batch map, but the SFC/Quantity rows still render.
 
 ### Planned follow-up (not yet built)
 

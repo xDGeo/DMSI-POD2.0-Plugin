@@ -30,12 +30,13 @@ sap.ui.define([
     "use strict";
 
     const { Priority } = CoreLibrary;
-    const { ObjectStatus, Text } = MobileLibrary;
+    const { ObjectStatus, Text, MessageToast } = MobileLibrary;
 
     const oLogger = Logger.getLogger("dmsi.pod2.plugins.FinishedSfcList");
 
-    const DEFAULT_BATCH_PARAMETER = "BATCH_NUMBER";
-    const DEFAULT_PREDECESSOR_PARAMETER = "PREDECESSOR_BATCH_NUMBER";
+    // Confirmed against a live tenant's SFC > Data Collections tab (group BATCH_CHARS).
+    const DEFAULT_BATCH_PARAMETER = "BATCH";
+    const DEFAULT_PREDECESSOR_PARAMETER = "IP_PREDECESSOR_BATCH";
 
     /**
      * Lists all finished (COMPLETED) SFCs of the order behind the currently selected
@@ -151,36 +152,63 @@ sap.ui.define([
                     return;
                 }
 
-                const aSfcs = await this.#oClient.getSfcs({
-                    plant: sPlant,
-                    // Deliberately left unrestricted: the order's finished SFCs may sit at
-                    // different work centers/operations, so we scope only by order below.
-                    workCenter: "",
-                    filter: { order: sOrder }
-                });
-
-                const aFinished = (aSfcs ?? []).filter(
-                    (oSfc) => oSfc.status?.code === SFCStatusCode.COMPLETED
-                );
+                const aFinished = await this._fetchFinishedSfcs(sPlant, sOrder);
 
                 if (!aFinished.length) {
                     PodContext.set(this._getModelPath(), []);
                     return;
                 }
 
-                const mBatchInfo = await this.#oBatchClient.getBatchInfo({
+                // Batch info is a best-effort enrichment: if it fails (e.g. wrong Data
+                // Collection parameter name/MDO field), the SFC/quantity rows must still
+                // render rather than the whole list disappearing.
+                const mBatchInfo = await this._fetchBatchInfo(sPlant, aFinished);
+
+                PodContext.set(this._getModelPath(), this._buildRows(aFinished, mBatchInfo));
+            } catch (oError) {
+                oLogger.error("[FinishedSfcList] Failed to load finished SFCs", { message: oError.message });
+                MessageToast.show(this.getI18nText("FinishedSfcList.loadFailed") || "Failed to load finished SFCs");
+                PodContext.set(this._getModelPath(), []);
+            } finally {
+                this.#bIsLoading = false;
+            }
+        }
+
+        /**
+         * Fetches all SFCs of the given order and keeps only the finished (COMPLETED) ones.
+         * @private
+         * @async
+         */
+        async _fetchFinishedSfcs(sPlant, sOrder) {
+            const aSfcs = await this.#oClient.getSfcs({
+                plant: sPlant,
+                // Deliberately left unrestricted: the order's finished SFCs may sit at
+                // different work centers/operations, so we scope only by order below.
+                workCenter: "",
+                filter: { order: sOrder }
+            });
+
+            return (aSfcs ?? []).filter((oSfc) => oSfc.status?.code === SFCStatusCode.COMPLETED);
+        }
+
+        /**
+         * Fetches batch/predecessor batch info for the given finished SFCs. Failures are
+         * logged and surfaced via toast but do not propagate, so the SFC list still renders.
+         * @private
+         * @async
+         */
+        async _fetchBatchInfo(sPlant, aFinished) {
+            try {
+                return await this.#oBatchClient.getBatchInfo({
                     plant: sPlant,
                     sfcs: aFinished.map((oSfc) => oSfc.sfc),
                     batchParameter: this.getPropertyValue(FinishedSfcList.PropertyId.BatchParameterName),
                     predecessorParameter: this.getPropertyValue(FinishedSfcList.PropertyId.PredecessorBatchParameterName)
                 });
-
-                PodContext.set(this._getModelPath(), this._buildRows(aFinished, mBatchInfo));
             } catch (oError) {
-                oLogger.error("[FinishedSfcList] Failed to load finished SFCs", { message: oError.message });
-                PodContext.set(this._getModelPath(), []);
-            } finally {
-                this.#bIsLoading = false;
+                oLogger.error("[FinishedSfcList] Failed to load batch info", { message: oError.message });
+                MessageToast.show(this.getI18nText("FinishedSfcList.batchLoadFailed") || "Failed to load batch data");
+                return {};
             }
         }
 

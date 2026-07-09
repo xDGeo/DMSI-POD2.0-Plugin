@@ -11,15 +11,16 @@ sap.ui.define([
 ) => {
     "use strict";
 
-    // ASSUMPTION: field names below follow the standard SAP DM MDO naming convention
-    // (all-caps, underscore-separated) inferred from other MDOs such as SFC_STEP_STATUS.
-    // Verify these against the tenant's actual $metadata for the /DATA_COLLECTION entity
-    // set before go-live and adjust the constants here if they differ.
+    // FIELD_PARAMETER_NAME/FIELD_PARAMETER_VALUE match the "Parameter Name"/"Parameter Value"
+    // columns confirmed on a live tenant's SFC > Data Collections tab. FIELD_COLLECTED_AT
+    // matches that tab's "Collected At" column. FIELD_PLANT/FIELD_SFC still follow the
+    // standard MDO naming convention (inferred from other MDOs like SFC_STEP_STATUS) and are
+    // NOT yet confirmed against $metadata for /DATA_COLLECTION — adjust here if a query fails.
     const FIELD_PLANT = "PLANT";
     const FIELD_SFC = "SFC";
     const FIELD_PARAMETER_NAME = "PARAMETER_NAME";
     const FIELD_PARAMETER_VALUE = "PARAMETER_VALUE";
-    const FIELD_CREATED_AT = "CREATED_AT";
+    const FIELD_COLLECTED_AT = "COLLECTED_AT";
 
     const MAX_SFCS_PER_QUERY = 50;
 
@@ -63,7 +64,7 @@ sap.ui.define([
                 $top: aSanitizedSfcs.length * aParameterNames.length * 5,
                 $skip: 0,
                 $select: "*",
-                $orderby: `${FIELD_CREATED_AT} desc`,
+                $orderby: `${FIELD_COLLECTED_AT} desc`,
                 $filter: `${sPlantFilter} and ${sSfcFilter} and ${sParameterFilter}`
             });
 
