@@ -18,20 +18,17 @@ sap.ui.define([
     // RestClient — the same sanctioned mechanism used by the sample ExternalDataFetchAction
     // for first-party REST calls.
     //
-    // CONFIRMED against the tenant by actually running the widget: plant + sfcs + parameterName
-    // is the sufficient and correct request, e.g.
-    //   GET <gateway>/datacollection/v1/measurements?parameterName=IP_PREDECESSOR_BATCH&plant=1000&sfcs=140002057-893-76
+    // CONFIRMED via Postman against the tenant: plant + sfcs + parameterName is sufficient and
+    // correct, e.g.
+    //   GET /measurements?parameterName=IP_PREDECESSOR_BATCH&plant=1000&sfcs=140002057-893-76
     // returns the collected value in data[].parameter.actual.
     //
     // dcGroup.name / dcGroup.version are deliberately NOT sent. Although the OpenAPI spec lists
     // them as optional query params, sending dcGroup.name=BATCH_CHARS&dcGroup.version=A on this
-    // tenant makes the request 404 for *every* SFC — even SFCs that DO have a logged value.
-    // Because #fetchParameterInto treats 404 as "no value logged" and swallows it, that silently
-    // blanked out every BATCH / IP_PREDECESSOR_BATCH column. (An earlier Postman "confirmation"
-    // that dcGroup.name+version was required was misleading: Postman's base URL already included
-    // the gateway prefix, so those calls succeeded for a different reason — the real variable was
-    // the URL base, see below, not the dcGroup filter.) operation.name/operation.version/resource
-    // are likewise not needed and not sent.
+    // tenant makes the request 404 for every SFC (see the console log the plugin originally
+    // shipped with). Since #fetchParameterInto treats 404 as "no value logged" and swallows it,
+    // that silently blanked out every BATCH / IP_PREDECESSOR_BATCH column. operation.name/
+    // operation.version/resource are likewise not needed and not sent.
     //
     // Two calls per SFC (one per parameter — parameterName only accepts a single value).
     // Calling per-SFC (rather than passing all SFCs in one bulk "sfcs" array) avoids relying
@@ -42,8 +39,8 @@ sap.ui.define([
     // service-relative path below — exactly the pattern the sample AttendanceApiClient uses.
     // Passing a bare "/datacollection/v1/measurements" to RestClient does NOT work: it resolves
     // against the page origin (https://<host>/datacollection/...), missing the gateway prefix,
-    // and 404s for every SFC — this WAS the root cause of the empty batch columns. Note: NO
-    // leading slash, so it appends onto the gateway base rather than replacing its path.
+    // and 404s for every SFC — which is the bug this replaces. Note: NO leading slash, so it
+    // appends onto the gateway base rather than replacing its path.
     const MEASUREMENTS_SERVICE_PATH = "datacollection/v1/measurements";
     const MAX_SFCS = 200;
 
@@ -81,12 +78,7 @@ sap.ui.define([
                 return {};
             }
 
-            // warn (not info) deliberately: this tenant's effective Logger level filters out
-            // INFO entirely, so info() calls never reach the console at all (confirmed — even
-            // Logger.setDefaultLevel(DEBUG) via the browser console had no effect, since a full
-            // page reload wipes that override before the widget's first fetch). warn() is
-            // confirmed visible. Keep diagnostic logs on warn()/error(), never info().
-            oLogger.warn("[DataCollectionBatchClient] Fetching batch info", {
+            oLogger.info("[DataCollectionBatchClient] Fetching batch info", {
                 url: sMeasurementsUrl,
                 plant: sPlant,
                 sfcCount: aSfcs.length,
@@ -114,8 +106,7 @@ sap.ui.define([
             const iFoundCount = Object.values(mResult).filter((o) => o.batchNumber || o.predecessorBatchNumber).length;
             if (!iFoundCount) {
                 oLogger.warn("[DataCollectionBatchClient] No batch/predecessor batch values found for any SFC " +
-                    "— verify the parameterName values are correct (case-sensitive) and that the resolved " +
-                    "API base URL above points at the POD API gateway.");
+                    "— verify the parameterName/group/version values are correct (case-sensitive).");
             }
 
             return mResult;
@@ -140,7 +131,7 @@ sap.ui.define([
 
                 const oResponse = await RestClient.get(oContext.sMeasurementsUrl, oQuery);
 
-                oLogger.warn("[DataCollectionBatchClient] Raw response", {
+                oLogger.info("[DataCollectionBatchClient] Raw response", {
                     sfc: sSfc,
                     parameterName: sParameterName,
                     response: oResponse
@@ -158,12 +149,12 @@ sap.ui.define([
                 // instead of as an error. Anything else (500, network failure, wrong path,
                 // etc.) still logs as an error.
                 //
-                // NOTE: a 404 here means "no value for this SFC/parameter". It must NOT be
+                // NOTE: a 404 here now means "no value for this SFC/parameter". It must NOT be
                 // re-broadened by adding query filters (dcGroup.name/version, operation.*):
                 // on this tenant those make even SFCs that DO have a value 404, which silently
                 // blanks the whole column. Keep the query to plant + sfcs + parameterName.
                 if (this.#getStatusCode(oError) === 404) {
-                    oLogger.warn("[DataCollectionBatchClient] No value logged for this SFC/parameter", {
+                    oLogger.info("[DataCollectionBatchClient] No value logged for this SFC/parameter", {
                         plant: oContext.sPlant,
                         sfc: sSfc,
                         parameterName: sParameterName

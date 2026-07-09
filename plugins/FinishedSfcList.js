@@ -38,6 +38,12 @@ sap.ui.define([
     const DEFAULT_BATCH_PARAMETER = "BATCH";
     const DEFAULT_PREDECESSOR_PARAMETER = "IP_PREDECESSOR_BATCH";
 
+    // When a split adds a new SFC row, its batch / predecessor batch data collection values
+    // are written asynchronously by the backend and lag by a few seconds. After detecting a
+    // new row we reload the page once after this delay so the values fill in without the user
+    // having to refresh manually.
+    const AUTO_REFRESH_DELAY_MS = 5000;
+
     /**
      * Lists all finished (COMPLETED) SFCs of the order behind the currently selected
      * work list item, together with the SFC's split quantity, batch number, and predecessor
@@ -117,6 +123,13 @@ sap.ui.define([
         #oBatchClient = new DataCollectionBatchClient();
         #bIsLoading = false;
 
+        // Auto-refresh-on-new-split state. #oKnownSfcs is the set of SFCs seen in the last
+        // fetch (null before the first fetch); #sLastOrder is the order that set belongs to;
+        // #iRefreshTimer holds the pending delayed re-fetch so it can be debounced/cancelled.
+        #oKnownSfcs = null;
+        #sLastOrder = null;
+        #iRefreshTimer = null;
+
         /** @extensible @override */
         onInit() {
             super.onInit();
@@ -129,6 +142,10 @@ sap.ui.define([
         /** @extensible @override */
         onExit() {
             super.onExit();
+            if (this.#iRefreshTimer) {
+                clearTimeout(this.#iRefreshTimer);
+                this.#iRefreshTimer = null;
+            }
             if (PodContext.isRunMode()) {
                 PodContext.unsubscribe(ModelPath.SelectedWorkListItems, this._onSelectionChanged, this);
             }
@@ -159,17 +176,21 @@ sap.ui.define([
                 const sPlant = PodContext.getPlant();
                 const sOrder = PodContext.getLastSelectedWorkListItem()?.order;
 
-                // warn (not info) deliberately — this tenant's effective Logger level
-                // filters out INFO entirely, so these would otherwise never reach the console.
-                oLogger.warn("[FinishedSfcList] Resolved context", { plant: sPlant, order: sOrder });
+                oLogger.info("[FinishedSfcList] Resolved context", { plant: sPlant, order: sOrder });
 
                 if (!sPlant || !sOrder) {
-                    oLogger.warn("[FinishedSfcList] Plant or order not available yet, showing empty list");
+                    oLogger.info("[FinishedSfcList] Plant or order not available yet, showing empty list");
                     PodContext.set(this._getModelPath(), []);
                     return;
                 }
 
                 const aFinished = await this._fetchFinishedSfcs(sPlant, sOrder);
+
+                // Detect SFC rows that are new since the last fetch of THIS order — i.e. a
+                // fresh split. A new order selection (different #sLastOrder) is NOT treated as
+                // "new rows": those SFCs already have their data collection written, so there's
+                // nothing to wait for.
+                const bHasNewRows = this._detectNewRows(sOrder, aFinished);
 
                 if (!aFinished.length) {
                     PodContext.set(this._getModelPath(), []);
@@ -182,6 +203,14 @@ sap.ui.define([
                 const mBatchInfo = await this._fetchBatchInfo(sPlant, aFinished);
 
                 PodContext.set(this._getModelPath(), this._buildRows(aFinished, mBatchInfo));
+
+                // A split just added a row whose data collection values lag behind by a few
+                // seconds. Reload the page once after a short delay so batch / predecessor
+                // batch fill in automatically. (After the reload #oKnownSfcs is empty again, so
+                // the first fetch detects no new rows and this terminates on its own.)
+                if (bHasNewRows) {
+                    this._scheduleDelayedRefresh();
+                }
             } catch (oError) {
                 oLogger.error("[FinishedSfcList] Failed to load finished SFCs", { message: oError.message });
                 MessageToast.show(this.getI18nText("FinishedSfcList.loadFailed") || "Failed to load finished SFCs");
@@ -189,6 +218,51 @@ sap.ui.define([
             } finally {
                 this.#bIsLoading = false;
             }
+        }
+
+        /**
+         * Compares the just-fetched SFCs against the previous fetch and reports whether any
+         * new SFC appeared for the SAME order (a split). Updates the tracked set/order as a
+         * side effect. Returns false on the first fetch and on an order switch — in both cases
+         * there's no "just split" row to wait for.
+         * @private
+         * @param {string} sOrder
+         * @param {Array<{sfc: string}>} aFinished
+         * @returns {boolean}
+         */
+        _detectNewRows(sOrder, aFinished) {
+            const oCurrentSfcs = new Set(aFinished.map((oSfc) => oSfc.sfc));
+            const bSameOrder = this.#sLastOrder === sOrder;
+            const bHasNewRows = bSameOrder && this.#oKnownSfcs !== null &&
+                [...oCurrentSfcs].some((sSfc) => !this.#oKnownSfcs.has(sSfc));
+
+            this.#oKnownSfcs = oCurrentSfcs;
+            this.#sLastOrder = sOrder;
+
+            return bHasNewRows;
+        }
+
+        /**
+         * Schedules a single delayed full page reload (debounced — a pending timer is
+         * replaced) so newly split rows pick up their asynchronously written data collection
+         * values. A full reload is used instead of an in-place re-fetch because the re-fetch
+         * alone did not surface the freshly written values.
+         *
+         * This does NOT loop: after the reload the widget re-initialises with an empty
+         * #oKnownSfcs, so the first post-reload fetch is treated as an initial load and never
+         * detects a "new" row.
+         * @private
+         */
+        _scheduleDelayedRefresh() {
+            if (this.#iRefreshTimer) {
+                clearTimeout(this.#iRefreshTimer);
+            }
+            oLogger.info("[FinishedSfcList] New split detected — reloading the page after delay to pick up data collection values",
+                { delayMs: AUTO_REFRESH_DELAY_MS });
+            this.#iRefreshTimer = setTimeout(() => {
+                this.#iRefreshTimer = null;
+                window.location.reload();
+            }, AUTO_REFRESH_DELAY_MS);
         }
 
         /**
@@ -205,7 +279,7 @@ sap.ui.define([
                 statusCode: SFCStatusCode.COMPLETED
             });
 
-            oLogger.warn("[FinishedSfcList] Finished SFCs fetched", { order: sOrder, count: aFinished.length });
+            oLogger.info("[FinishedSfcList] Finished SFCs fetched", { order: sOrder, count: aFinished.length });
 
             return aFinished;
         }
@@ -218,14 +292,15 @@ sap.ui.define([
          */
         async _fetchBatchInfo(sPlant, aFinished) {
             try {
-                // Confirmed by running against the tenant: plant + sfcs + parameterName is
-                // sufficient. dcGroup.* and operation.* are deliberately NOT sent — see
-                // DataCollectionBatchClient. The apiBaseUrl (resolved gateway base) is what
-                // makes the URL correct; without it the call resolves against the bare page
-                // origin and 404s for every SFC.
+                // Confirmed via Postman: plant + sfcs + parameterName is sufficient. dcGroup.*
+                // and operation.* are deliberately not sent — see DataCollectionBatchClient.
+                // The apiBaseUrl (resolved gateway base) is what makes the URL correct; without
+                // it the call resolves against the bare origin and 404s.
+                // TODO(TESTING ONLY): plant hardcoded to "1000" to rule out a missing/wrong
+                // plant from PodContext. Revert to `plant: sPlant` before shipping.
                 return await this.#oBatchClient.getBatchInfo({
                     apiBaseUrl: this._resolveApiBaseUrl(),
-                    plant: sPlant,
+                    plant: "1000",
                     sfcs: aFinished.map((oSfc) => oSfc.sfc),
                     batchParameter: this.getPropertyValue(FinishedSfcList.PropertyId.BatchParameterName),
                     predecessorParameter: this.getPropertyValue(FinishedSfcList.PropertyId.PredecessorBatchParameterName)
@@ -251,7 +326,7 @@ sap.ui.define([
             // 1. Manual override configured in POD Designer.
             const sManual = this.getPropertyValue(FinishedSfcList.PropertyId.ApiBaseUrl)?.trim();
             if (sManual) {
-                oLogger.warn("[FinishedSfcList] Using configured API base URL", { url: sManual });
+                oLogger.info("[FinishedSfcList] Using configured API base URL", { url: sManual });
                 return sManual;
             }
 
@@ -261,7 +336,7 @@ sap.ui.define([
                 const oMatch = window.location.pathname.match(/^(.*\/~[^~]+~\/)/);
                 if (oMatch) {
                     const sResolved = `${window.location.origin}${oMatch[1]}fnd/api-gateway-ms/`;
-                    oLogger.warn("[FinishedSfcList] Resolved API base URL from window.location", { url: sResolved });
+                    oLogger.info("[FinishedSfcList] Resolved API base URL from window.location", { url: sResolved });
                     return sResolved;
                 }
             } catch (oError) {
@@ -274,7 +349,7 @@ sap.ui.define([
                 if (typeof oRuntime?.getPublicApiRestDataSourceUri === "function") {
                     const sUrl = oRuntime.getPublicApiRestDataSourceUri();
                     if (sUrl) {
-                        oLogger.warn("[FinishedSfcList] Resolved API base URL from POD runtime", { url: sUrl });
+                        oLogger.info("[FinishedSfcList] Resolved API base URL from POD runtime", { url: sUrl });
                         return sUrl;
                     }
                 }
