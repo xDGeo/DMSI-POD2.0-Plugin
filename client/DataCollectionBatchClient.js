@@ -146,12 +146,43 @@ sap.ui.define([
                     mResult[sSfc][sField] = sValue;
                 }
             } catch (oError) {
-                oLogger.error("[DataCollectionBatchClient] Failed to fetch measurement", {
-                    sfc: sSfc,
-                    parameterName: sParameterName,
-                    message: oError.message
-                });
+                // Confirmed by direct comparison against a working request for the same SFC/
+                // plant/group with a different parameterName: this API returns 404 (rather
+                // than 200 with an empty array) when the specific SFC has no value logged for
+                // the requested parameter — e.g. predecessor batch may only be recorded on
+                // certain SFCs, not universally. That's an expected, normal outcome, not a
+                // failure, so it's logged quietly instead of as an error. Anything else (500,
+                // network failure, wrong path, etc.) still logs as an error.
+                if (this.#getStatusCode(oError) === 404) {
+                    oLogger.info("[DataCollectionBatchClient] No value logged for this SFC/parameter", {
+                        sfc: sSfc,
+                        parameterName: sParameterName
+                    });
+                } else {
+                    oLogger.error("[DataCollectionBatchClient] Failed to fetch measurement", {
+                        sfc: sSfc,
+                        parameterName: sParameterName,
+                        message: oError.message
+                    });
+                }
             }
+        }
+
+        /**
+         * Extracts an HTTP status code from a RestClient error, tolerating whichever shape it
+         * comes in (a numeric .status/.statusCode property, or embedded in the message text
+         * as "Request returned 404").
+         * @private
+         */
+        #getStatusCode(oError) {
+            if (typeof oError?.status === "number") {
+                return oError.status;
+            }
+            if (typeof oError?.statusCode === "number") {
+                return oError.statusCode;
+            }
+            const oMatch = /returned (\d+)/.exec(oError?.message ?? "");
+            return oMatch ? Number(oMatch[1]) : null;
         }
 
         /**

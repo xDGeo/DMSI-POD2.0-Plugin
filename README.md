@@ -98,6 +98,15 @@ the whole list. If a warning logs that Group is set but Group Version is blank (
 versa), that's the **Data Collection Group Version** property not being set on this widget
 instance in POD Designer — the two must be set together.
 
+**Note — a 404 for one SFC/parameter combination is not necessarily a bug:** confirmed by
+direct comparison against a working request for the same plant/SFC/group with a different
+`parameterName`, this API returns **404** (not 200 with an empty array) when a specific SFC
+has no value logged for the requested parameter — e.g. predecessor batch may only be recorded
+on certain SFCs, not universally. `#fetchParameterInto()` now logs that case at `info` level
+(`[DataCollectionBatchClient] No value logged for this SFC/parameter`) instead of `error`, so
+the console isn't full of red errors for a normal "nothing collected here" outcome. Genuine
+failures (wrong path, 500, network errors, etc.) still log as errors.
+
 **Fixed (root cause):** the widget originally fetched SFCs via `SfcPublicApiClient.getSfcs()`,
 which wraps the SFC Work List REST API. That API's `sfcStatuses` filter only supports
 `NEW`/`IN_QUEUE`/`ACTIVE`/`HOLD` — there is no `COMPLETE`/`DONE` option, because "work list"
